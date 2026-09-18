@@ -164,9 +164,9 @@ async function handleStream(type, rawId, baseUrl) {
   }
   // Keep titles already at home even if search fails or no longer lists them.
   const seen = new Set(items.map((it) => it.hebitsId));
-  for (const e of await home.entries()) {
-    if (e.imdb === imdb && e.hebitsId && !seen.has(e.hebitsId)) {
-      items.push({ hebitsId: e.hebitsId, title: e.name, size: e.size, files: e.files.length, atHomeOnly: true });
+  for (const atHome of await home.entries()) {
+    if (atHome.imdb === imdb && atHome.hebitsId && !seen.has(atHome.hebitsId)) {
+      items.push({ hebitsId: atHome.hebitsId, title: atHome.name, size: atHome.size, files: atHome.files.length, atHomeOnly: true });
     }
   }
 
@@ -408,7 +408,7 @@ async function handlePlay(req, res, hebitsId, s, e, query) {
   const ep = Number(s) ? { season: Number(s), episode: Number(e) } : null;
   const target = pickFile(meta?.files || entry.files, ep);
   if (!target) throw new UserError(`no video file for ${ep ? `S${s}E${e}` : 'movie'} in ${entry.name}`);
-  return streamTarget(req, res, { hash: entry.hash, entry, target, pieceLength: meta?.pieceLength || entry.pieceLength });
+  return streamTarget(req, res, { hash: entry.hash, entry, target, pieceLength: meta?.pieceLength || entry.pieceLength, metaMissing: !meta });
 }
 
 // Playing something already at home. Unlike handlePlay, this never spends a download.
@@ -419,15 +419,21 @@ async function handlePlayLocal(req, res, hash, s, e) {
   const ep = Number(s) ? { season: Number(s), episode: Number(e) } : null;
   const target = pickFile(meta?.files || entry.files, ep);
   if (!target) throw new UserError(`no video file for ${ep ? `S${s}E${e}` : 'movie'} in ${entry.name}`);
-  return streamTarget(req, res, { hash, entry, target, pieceLength: meta?.pieceLength || entry.pieceLength });
+  return streamTarget(req, res, { hash, entry, target, pieceLength: meta?.pieceLength || entry.pieceLength, metaMissing: !meta });
 }
 
-async function streamTarget(req, res, { hash, entry, target, pieceLength }) {
+async function streamTarget(req, res, { hash, entry, target, pieceLength, metaMissing }) {
   const [qfiles, props, info] = await Promise.all([qbit.files(hash), qbit.properties(hash), qbit.torrent(hash)]);
   const qf =
     qfiles.find((f) => f.name === target.path) ||
     qfiles.find((f) => f.size === target.length && f.name.split('/').pop() === target.path.split('/').pop());
   if (!qf) throw new UserError(`file not found in qBittorrent: ${target.path}`);
+  // Without the exported .torrent we have no byte offset, so an incomplete file can't be
+  // piece-gated; the streamer will wait out its timeout and 503. Log why, so a spinner
+  // that looks stuck has a cause in the log instead of nothing.
+  if (metaMissing && qf.progress < 1) {
+    log(`play ${hash}: torrent layout unavailable (exported .torrent could not be read), so byte offsets are unknown and ${qf.name} (${(qf.progress * 100).toFixed(1)}%) cannot be piece-gated`);
+  }
   if (qf.progress < 1) await focusOn(hash, qf.index, qfiles, info);
   if (req.method !== 'HEAD') log(`play ${hash} ${qf.name} (${(qf.progress * 100).toFixed(1)}%) range=${req.headers.range || '-'} ua=${req.headers['user-agent'] || '-'}`);
 
