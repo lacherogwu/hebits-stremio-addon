@@ -18,7 +18,7 @@ import { makeAddon } from './lib/addon.js';
 import { makePlayer } from './lib/play.js';
 
 const cfg = loadConfig();
-const store = new Store(CONFIG_DIR, cfg.timezone);
+const store = new Store(CONFIG_DIR, cfg.timezone, (m) => log(m));
 const jackett = new Jackett(cfg);
 const qbit = new QBit(cfg);
 const site = new HebitsSite(cfg.jackettIndexerConfig);
