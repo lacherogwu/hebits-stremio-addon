@@ -103,3 +103,11 @@ test('byHash finds one entry', async () => {
   assert.equal((await lib.byHash('aaaa')).hebitsId, '1001');
   assert.equal(await lib.byHash('zzzz'), undefined);
 });
+
+test('byHash fetches file lists for one torrent, not the whole library', async () => {
+  const q = fakeQbit([hebits, { ...hebits, hash: 'dddd' }, { ...hebits, hash: 'eeee' }]);
+  const lib = new HomeLibrary(q);
+  const e = await lib.byHash('aaaa');
+  assert.equal(e.hash, 'aaaa');
+  assert.equal(q.calls(), 1);
+});
