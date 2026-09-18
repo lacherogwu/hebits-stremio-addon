@@ -88,6 +88,37 @@ test('holds back bytes until their piece completes, then continues', async () =>
   }
 });
 
+test('a transient pieceStates failure does not truncate the response mid-stream', async () => {
+  // pieces 2 and 3 (file bytes 0..31) are already done; piece 4 arrives only after a
+  // pieceStates() call fails once - the failure must not end the response early.
+  const states = [0, 0, 2, 2, 0, 2];
+  const dir = mkdtempSync(join(tmpdir(), 'hb-'));
+  const path = join(dir, 'f.mkv');
+  const data = Buffer.from(Array.from({ length: 64 }, (_, i) => i));
+  writeFileSync(path, data);
+  let calls = 0;
+  const qbit = {
+    async pieceStates() {
+      calls++;
+      if (calls === 2) throw new Error('qBittorrent hiccup'); // one transient failure
+      if (calls >= 3) states[4] = 2; // then it recovers
+      return states;
+    },
+  };
+  const f = { qbit, path, size: 64, offset: 32, pieceLength: 16, complete: false, waits: { firstBytes: 3000, piece: 3000, poll: 50 } };
+  const server = createServer((req, res) => serveFile(req, res, { ...f, hash: 'h5' }, () => {}));
+  await new Promise((r) => server.listen(0, r));
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/`, { headers: { range: 'bytes=0-' } });
+    assert.equal(res.status, 206);
+    const body = Buffer.from(await res.arrayBuffer());
+    assert.deepEqual(body, data, 'the full range must still arrive despite the mid-stream pieceStates hiccup');
+    assert.ok(calls >= 3, 'the failure must actually have been exercised');
+  } finally {
+    server.close();
+  }
+});
+
 test('503 when the first bytes never arrive', async () => {
   const { f } = setup([0, 0, 0, 0, 0, 0]);
   const short = { ...f, waits: { firstBytes: 200, piece: 200, poll: 20 } };
