@@ -1,7 +1,7 @@
 // Hebits Stremio addon. Streams torrents from your own qBittorrent, no debrid service.
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { readdirSync, readFileSync, writeFileSync, existsSync, statSync, copyFileSync, truncateSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, copyFileSync, truncateSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { loadConfig, CONFIG_DIR } from './lib/config.js';
@@ -11,7 +11,7 @@ import { Notifier } from './lib/notify.js';
 import { QBit } from './lib/qbit.js';
 import { buildTags, parseTags } from './lib/tags.js';
 import { readTorrent } from './lib/bencode.js';
-import { pickFile, VIDEO_EXT, showName, seasonInfo } from './lib/parse.js';
+import { pickFile, VIDEO_EXT, seasonInfo } from './lib/parse.js';
 import { parseHebitsId, kindOf, catalogMetas, metaFor, matchesSearch } from './lib/library.js';
 import { parseFindId, itemsFor, groupResults, findMeta } from './lib/search.js';
 import { buildStreams } from './lib/streams.js';
@@ -19,6 +19,9 @@ import { serveFile } from './lib/streamer.js';
 import { focusPlan, restorePlan, shouldRestore, NORMAL, TOP } from './lib/focus.js';
 import { HebitsSite } from './lib/hebits.js';
 import { createHealthTracker } from './lib/health.js';
+import { HomeLibrary } from './lib/home.js';
+import { TorrentMeta } from './lib/torrentmeta.js';
+import { IdentityResolver, normalizeTitle } from './lib/identity.js';
 
 const cfg = loadConfig();
 const store = new Store(CONFIG_DIR, cfg.timezone);
@@ -27,6 +30,16 @@ const qbit = new QBit(cfg);
 const site = new HebitsSite(cfg.jackettIndexerConfig);
 const notifier = new Notifier(cfg.notify || {}, (store.data.notified ??= {}), () => store.save(), (m) => log(m));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+const home = new HomeLibrary(qbit, log);
+const torrentMeta = new TorrentMeta(qbit, log);
+const identity = new IdentityResolver({
+  jackett,
+  qbit,
+  cinemetaSearch,
+  cache: (store.data.identity ??= {}),
+  save: () => store.save(),
+  log,
+});
 const LOG_FILE = cfg.logFile;
 const GB = 1024 ** 3;
 const FOCUS_IDLE_MS = 20 * 60 * 1000;
@@ -54,23 +67,6 @@ const manifest = {
   ],
   behaviorHints: { configurable: false },
 };
-
-// Index .torrent files grabbed outside the addon (e.g. the seeding packs) so their
-// results show as local.
-function indexTorrentDir() {
-  if (!existsSync(cfg.torrentDir)) return;
-  for (const f of readdirSync(cfg.torrentDir)) {
-    const id = f.match(/^hebits-(\d+)\.torrent$/)?.[1];
-    if (!id || store.torrent(id)?.hash) continue;
-    try {
-      const t = readTorrent(readFileSync(join(cfg.torrentDir, f)));
-      store.putTorrent(id, { hash: t.infoHash, name: t.name, files: t.files, pieceLength: t.pieceLength });
-      log(`indexed ${f} -> ${t.infoHash}`);
-    } catch (e) {
-      log(`index ${f}: ${e.message}`);
-    }
-  }
-}
 
 class UserError extends Error {}
 
@@ -137,15 +133,17 @@ async function ensureTorrent(hebitsId, meta, { category = cfg.watchCategory, sav
   });
 }
 
-async function localStatus(ids) {
-  const byHash = new Map();
-  for (const id of ids) {
-    const e = store.torrent(id);
-    if (e?.hash) byHash.set(e.hash, id);
-  }
+// "Ready at home" for Jackett search results. Tags give an exact answer; the release
+// name covers torrents added before tagging, or by another tool.
+async function localStatus(ids, items = []) {
+  const entries = await home.entries();
+  const byId = new Map(entries.filter((e) => e.hebitsId).map((e) => [e.hebitsId, e]));
+  const byName = new Map(entries.map((e) => [normalizeTitle(e.name), e]));
   const out = new Map();
-  for (const t of await qbit.torrents([...byHash.keys()]).catch(() => [])) {
-    out.set(byHash.get(t.hash), { progress: t.progress, state: t.state, dlspeed: t.dlspeed });
+  for (const id of ids) {
+    const item = items.find((it) => it.hebitsId === id);
+    const hit = byId.get(id) || (item && byName.get(normalizeTitle(item.title)));
+    if (hit) out.set(id, { progress: hit.progress, state: hit.state, dlspeed: 0 });
   }
   return out;
 }
@@ -166,9 +164,9 @@ async function handleStream(type, rawId, baseUrl) {
   }
   // Keep titles already at home even if search fails or no longer lists them.
   const seen = new Set(items.map((it) => it.hebitsId));
-  for (const t of store.torrentsFor(imdb)) {
-    if (!seen.has(t.hebitsId) && t.title) {
-      items.push({ hebitsId: t.hebitsId, title: t.title, size: t.size, files: t.fileCount, atHomeOnly: true });
+  for (const e of await home.entries()) {
+    if (e.imdb === imdb && e.hebitsId && !seen.has(e.hebitsId)) {
+      items.push({ hebitsId: e.hebitsId, title: e.name, size: e.size, files: e.files.length, atHomeOnly: true });
     }
   }
 
@@ -189,7 +187,7 @@ function searchFailed(type, id, err) {
 }
 
 async function streamsFor({ type, items, season, episode, searchError, baseUrl, query }) {
-  const local = await localStatus(items.map((it) => it.hebitsId));
+  const local = await localStatus(items.map((it) => it.hebitsId), items);
   warmUp(local, type === 'series' ? { season, episode } : null);
   const d = await daily();
   const grabsLeft = Math.max(0, d.limit - d.used);
@@ -280,31 +278,9 @@ async function handleFindStream(type, ref, baseUrl) {
 // ---- home library -------------------------------------------------------
 
 async function libraryEntries() {
-  const all = Object.entries(store.data.torrents)
-    .filter(([, t]) => t.hash)
-    .map(([hebitsId, t]) => ({ hebitsId, ...t }));
-  const present = await qbit.torrents(all.map((t) => t.hash)).catch(() => []);
-  const progress = new Map();
-  for (const t of present) {
-    const e = all.find((x) => x.hash === t.hash);
-    if (e) progress.set(e.hebitsId, t.progress);
-  }
-  return { entries: all.filter((e) => progress.has(e.hebitsId)), progress };
-}
-
-// Torrents grabbed outside the addon have no IMDb id or cover yet: look them up once.
-async function enrich(entry) {
-  if (entry.enrichedAt || (entry.imdb && entry.cover)) return;
-  try {
-    const items = await jackett.search({ t: 'search', q: showName(entry.name) });
-    const it = items.find((x) => x.hebitsId === entry.hebitsId);
-    const update = { enrichedAt: new Date().toISOString() };
-    if (it) Object.assign(update, { imdb: entry.imdb || it.imdb, cover: it.cover, title: it.title, size: it.size, fileCount: it.files });
-    store.putTorrent(entry.hebitsId, update);
-    Object.assign(entry, update);
-  } catch (err) {
-    log(`enrich ${entry.hebitsId}: ${err.message}`);
-  }
+  const entries = await home.entries();
+  await Promise.all(entries.map((e) => identity.resolve(e).catch(() => e)));
+  return entries;
 }
 
 const cinemetaCache = new Map();
@@ -320,61 +296,78 @@ async function cinemeta(type, imdb) {
   return meta;
 }
 
-const posterUrl = (baseUrl) => (e) => (e.cover || e.imdb ? `${baseUrl}/poster/${e.hebitsId}` : undefined);
+// Recover an IMDb id from a release name. Works for most English releases; Israeli
+// titles with no IMDb entry stay unidentified, which no source could fix.
+const cinemetaSearchCache = new Map();
+async function cinemetaSearch(name) {
+  if (cinemetaSearchCache.has(name)) return cinemetaSearchCache.get(name);
+  let imdb;
+  for (const type of ['series', 'movie']) {
+    const url = `${CINEMETA}/catalog/${type}/top/search=${encodeURIComponent(name)}.json`;
+    const j = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    imdb = j?.metas?.[0]?.imdb_id || j?.metas?.[0]?.id;
+    if (imdb?.startsWith('tt')) break;
+    imdb = undefined;
+  }
+  cinemetaSearchCache.set(name, imdb);
+  return imdb;
+}
+
+const posterUrl = (baseUrl) => (e) => (e.imdb || e.hebitsId ? `${baseUrl}/poster/${e.hash}` : undefined);
 
 async function handleCatalog(type, extraPath, baseUrl) {
   const extra = new URLSearchParams(extraPath || '');
-  const { entries, progress } = await libraryEntries();
-  await Promise.all(entries.map(enrich));
-  const metas = catalogMetas(entries, type, { progress, posterUrl: posterUrl(baseUrl) });
+  const entries = await libraryEntries();
+  const metas = catalogMetas(entries, type, { posterUrl: posterUrl(baseUrl) });
   const q = extra.get('search')?.trim();
   return q ? metas.filter((m) => matchesSearch(m, q)) : metas;
 }
 
 async function handleMeta(rawId, baseUrl) {
   const ref = parseHebitsId(rawId);
-  const { entries, progress } = await libraryEntries();
-  const entry = ref && entries.find((e) => e.hebitsId === ref.hebitsId);
+  if (!ref) return null;
+  const entry = (await libraryEntries()).find((e) => e.hash === ref.hash);
   if (!entry) return null;
-  await enrich(entry);
   const extra = entry.imdb ? await cinemeta(kindOf(entry), entry.imdb) : undefined;
-  return metaFor(entry, { progress: progress.get(entry.hebitsId), posterUrl: posterUrl(baseUrl), extra });
+  return metaFor(entry, { posterUrl: posterUrl(baseUrl), extra });
 }
 
 async function handleLibraryStream(type, rawId, baseUrl) {
   const ref = parseHebitsId(rawId);
-  const entry = ref && store.torrent(ref.hebitsId);
-  if (!entry?.hash) return [];
-  const local = await localStatus([ref.hebitsId]);
-  if (!local.size) return [];
+  if (!ref) return [];
+  const entry = (await libraryEntries()).find((e) => e.hash === ref.hash);
+  if (!entry) return [];
   const suffix = ref.season ? `/${ref.season}/${ref.episode}` : '/0/0';
   return buildStreams({
     items: [
       {
-        hebitsId: ref.hebitsId,
-        title: entry.title || entry.name,
-        size: entry.size ?? entry.files.reduce((n, f) => n + f.length, 0),
-        files: entry.fileCount ?? entry.files.length,
+        hebitsId: entry.hash,
+        title: entry.name,
+        size: entry.size,
+        files: entry.files.length,
         atHomeOnly: true,
         pinned: true,
       },
     ],
-    local,
+    local: new Map([[entry.hash, { progress: entry.progress, state: entry.state }]]),
     type,
     season: ref.season,
     episode: ref.episode,
     grabsLeft: 1,
     dailyLimit: store.limitToday(cfg),
     minFreeBytes: 0,
-    playUrl: (id) => `${baseUrl}/play/${id}${suffix}`,
+    playUrl: () => `${baseUrl}/play/h/${entry.hash}${suffix}`,
   });
 }
 
 const cachedItem = (hebitsId) => [...jackett.cache.values()].flatMap((c) => c.items).find((it) => it.hebitsId === hebitsId);
 
-async function handlePoster(res, hebitsId) {
-  const entry = store.torrent(hebitsId);
-  const cover = entry?.cover || cachedItem(hebitsId)?.cover;
+async function handlePoster(res, ref) {
+  const entry = /^\d+$/.test(ref) ? undefined : await home.byHash(ref.toLowerCase());
+  const hebitsId = entry?.hebitsId || (/^\d+$/.test(ref) ? ref : undefined);
+  const cover = hebitsId && cachedItem(hebitsId)?.cover;
   if (cover) {
     const r = await fetch(cover, { signal: AbortSignal.timeout(15_000) }).catch(() => null);
     if (r?.ok) {
@@ -382,8 +375,9 @@ async function handlePoster(res, hebitsId) {
       return res.end(Buffer.from(await r.arrayBuffer()));
     }
   }
-  if (entry?.imdb) {
-    res.writeHead(302, { Location: `https://images.metahub.space/poster/medium/${entry.imdb}/img` });
+  const imdb = entry?.imdb;
+  if (imdb) {
+    res.writeHead(302, { Location: `https://images.metahub.space/poster/medium/${imdb}/img` });
     return res.end();
   }
   res.writeHead(404);
@@ -410,17 +404,32 @@ async function handlePlay(req, res, hebitsId, s, e, query) {
     cover: item?.cover ?? entry?.cover,
   });
 
+  const meta = await torrentMeta.get(entry.hash);
   const ep = Number(s) ? { season: Number(s), episode: Number(e) } : null;
-  const target = pickFile(entry.files, ep);
+  const target = pickFile(meta?.files || entry.files, ep);
   if (!target) throw new UserError(`no video file for ${ep ? `S${s}E${e}` : 'movie'} in ${entry.name}`);
+  return streamTarget(req, res, { hash: entry.hash, entry, target, pieceLength: meta?.pieceLength || entry.pieceLength });
+}
 
-  const [qfiles, props, info] = await Promise.all([qbit.files(entry.hash), qbit.properties(entry.hash), qbit.torrent(entry.hash)]);
+// Playing something already at home. Unlike handlePlay, this never spends a download.
+async function handlePlayLocal(req, res, hash, s, e) {
+  const entry = await home.byHash(hash);
+  if (!entry) throw new UserError('not in qBittorrent any more');
+  const meta = await torrentMeta.get(hash);
+  const ep = Number(s) ? { season: Number(s), episode: Number(e) } : null;
+  const target = pickFile(meta?.files || entry.files, ep);
+  if (!target) throw new UserError(`no video file for ${ep ? `S${s}E${e}` : 'movie'} in ${entry.name}`);
+  return streamTarget(req, res, { hash, entry, target, pieceLength: meta?.pieceLength || entry.pieceLength });
+}
+
+async function streamTarget(req, res, { hash, entry, target, pieceLength }) {
+  const [qfiles, props, info] = await Promise.all([qbit.files(hash), qbit.properties(hash), qbit.torrent(hash)]);
   const qf =
     qfiles.find((f) => f.name === target.path) ||
     qfiles.find((f) => f.size === target.length && f.name.split('/').pop() === target.path.split('/').pop());
   if (!qf) throw new UserError(`file not found in qBittorrent: ${target.path}`);
-  if (qf.progress < 1) await focusOn(entry.hash, qf.index, qfiles, info);
-  if (req.method !== 'HEAD') log(`play ${hebitsId} ${qf.name} (${(qf.progress * 100).toFixed(1)}%) range=${req.headers.range || '-'} ua=${req.headers['user-agent'] || '-'}`);
+  if (qf.progress < 1) await focusOn(hash, qf.index, qfiles, info);
+  if (req.method !== 'HEAD') log(`play ${hash} ${qf.name} (${(qf.progress * 100).toFixed(1)}%) range=${req.headers.range || '-'} ua=${req.headers['user-agent'] || '-'}`);
 
   // content_path is the torrent's current location (unfinished files may still sit in
   // a per-torrent download_path); qBittorrent file names start with the root folder.
@@ -430,11 +439,11 @@ async function handlePlay(req, res, hebitsId, s, e, query) {
     res,
     {
       qbit,
-      hash: entry.hash,
+      hash,
       path: join(location, qf.name),
       size: qf.size,
       offset: target.offset,
-      pieceLength: entry.pieceLength || props.piece_size,
+      pieceLength: pieceLength || props.piece_size,
       complete: qf.progress >= 1,
     },
     log,
@@ -443,10 +452,12 @@ async function handlePlay(req, res, hebitsId, s, e, query) {
 
 // Opening a title in Nuvio starts fetching the matching file of torrents already at
 // home, so playback has a head start. Never grabs anything new.
-function warmUp(local, ep) {
-  for (const [id, st] of local) {
-    if (st.progress >= 1) continue;
-    const entry = store.torrent(id);
+async function warmUp(local, ep) {
+  const pending = [...local].filter(([, st]) => st.progress < 1);
+  if (!pending.length) return;
+  const byId = new Map((await home.entries()).filter((e) => e.hebitsId).map((e) => [e.hebitsId, e]));
+  for (const [id, st] of pending) {
+    const entry = byId.get(id);
     const target = entry && pickFile(entry.files, ep);
     if (!target) continue;
     (async () => {
@@ -558,8 +569,10 @@ const server = createServer(async (req, res) => {
     if (m && parseFindId(m[2])) return json(res, 200, { streams: await handleFindStream(m[1], parseFindId(m[2]), baseUrl) });
     if (m && parseHebitsId(m[2])) return json(res, 200, { streams: await handleLibraryStream(m[1], m[2], baseUrl) });
     if (m) return json(res, 200, { streams: await handleStream(m[1], m[2], baseUrl) });
-    m = route.match(/^poster\/(\d+)$/);
+    m = route.match(/^poster\/([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|\d+)$/);
     if (m) return await handlePoster(res, m[1]);
+    m = route.match(/^play\/h\/([0-9a-fA-F]{40}|[0-9a-fA-F]{64})\/(\d+)\/(\d+)$/);
+    if (m) return await handlePlayLocal(req, res, m[1].toLowerCase(), m[2], m[3]);
     m = route.match(/^play\/(\d+)\/(\d+)\/(\d+)$/);
     if (m) return await handlePlay(req, res, m[1], m[2], m[3], url.searchParams);
     if (route === 'notify-test') {
@@ -594,7 +607,6 @@ const server = createServer(async (req, res) => {
   }
 });
 
-indexTorrentDir();
 // launchd keeps the log file open in append mode: copy then truncate.
 function rotateLog() {
   try {
