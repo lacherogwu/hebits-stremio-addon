@@ -1,0 +1,14 @@
+{
+  "port": 7000,
+  "jackettUrl": "http://127.0.0.1:9117",
+  "jackettIndexer": "hebits",
+  "qbitUrl": "http://127.0.0.1:8080",
+  "qbitUsername": "",
+  "qbitPassword": "",
+  "watchCategory": "watch",
+  "watchPath": "/home/you/hebits/watch",
+  "timezone": "Asia/Jerusalem",
+  "dailyLimit": 10,
+  "minFreeGB": 20,
+  "notify": { "webhookUrl": "" }
+}
