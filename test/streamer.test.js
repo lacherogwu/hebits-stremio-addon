@@ -88,9 +88,10 @@ test('holds back bytes until their piece completes, then continues', async () =>
   }
 });
 
-test('503 when the first bytes never arrive', { timeout: 40_000 }, async () => {
+test('503 when the first bytes never arrive', async () => {
   const { f } = setup([0, 0, 0, 0, 0, 0]);
-  const r = await request(f, { range: 'bytes=0-' }, 'h3');
+  const short = { ...f, waits: { firstBytes: 200, piece: 200, poll: 20 } };
+  const r = await request(short, { range: 'bytes=0-' }, 'h3');
   assert.equal(r.status, 503);
 });
 
