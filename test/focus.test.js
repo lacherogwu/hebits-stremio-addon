@@ -11,9 +11,10 @@ test('focus raises the target and never pauses other files', () => {
   assert.deepEqual(focusPlan([q(0, 1)], 0), { raise: [] });
 });
 
-test('restore puts paused, high and top files back to normal', () => {
+test('restore puts high and top files back to normal either way, paused files only when managed', () => {
   const files = [q(0, 1), q(1, 0.3, 0), q(2, 0.9, 6), q(3, 0.5, 1), q(4, 0.1, 7)];
-  assert.deepEqual(restorePlan(files), [1, 2, 4]);
+  assert.deepEqual(restorePlan(files, true), [1, 2, 4], 'a torrent this addon manages: paused files are lifted too');
+  assert.deepEqual(restorePlan(files, false), [2, 4], 'a torrent it did not add: the user\'s pause stands');
 });
 
 test('restore once the file is done, or after being idle', () => {

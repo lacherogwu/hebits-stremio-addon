@@ -53,10 +53,14 @@ The addon exposes four catalogs:
 - Whichever file is being watched gets **top download priority** (`lib/focus.js`); for
   single-video torrents (a movie), first/last-piece priority is also raised so playback can
   start near-instantly.
-- **Nothing is ever paused.** Hebits only counts seed time once a torrent is 100% downloaded,
-  so pausing other files to prioritize one — which would leave the torrent perpetually
-  incomplete — is avoided entirely. (It also measurably stalls libtorrent; see
-  [Lessons learned](#lessons-learned).)
+- **This addon never pauses a file itself.** Pausing other files to prioritize one measurably
+  stalls libtorrent (see [Lessons learned](#lessons-learned)), so it isn't done.
+- **It does un-pause, though — but only for torrents it manages.** Hebits only counts seed
+  time once a torrent is 100% downloaded, so a file *you* deselected in a torrent this addon
+  added would otherwise leave that torrent perpetually incomplete and earning nothing. For
+  torrents in its own watch category, this addon re-enables deselected files so the torrent
+  can actually finish. A torrent it didn't add is left alone — whatever selection you made
+  there stands.
 
 ## Requirements
 
@@ -76,6 +80,10 @@ node server.js
 No build step, no `npm install` — the repo has zero dependencies. The first run creates
 `~/.config/hebits-stremio-addon/config.json` with a random `token` and prints either the
 listening banner or an error explaining what to fix (see [Configuration](#configuration)).
+
+The default port, `7000`, collides with the AirPlay Receiver service on macOS. If the addon
+exits complaining the port is already in use, set `port` to something else (e.g. `7001`) in
+`config.json`.
 
 Add the addon to Stremio/Nuvio with:
 
@@ -178,7 +186,7 @@ lets an unfinished torrent be watched safely, without ever serving a byte that h
   file used roughly twice its size until it finished. Turn pre-allocation off.
 - **Pausing files to prioritize one stalls the torrent.** On qBittorrent 5.2 / libtorrent
   1.2, pausing other files to prioritize one stalls the whole torrent for 10–60 s — this is
-  why nothing is ever paused here (see [How playback works](#how-playback-works)).
+  why this addon never pauses a file itself (see [How playback works](#how-playback-works)).
 - **Stremio clients load home rows lazily.** Some clients (Nuvio included) only fetch the
   first few home-catalog rows up front, so move this addon's rows near the top of your
   reordering settings or they may never load.
