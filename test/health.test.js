@@ -16,21 +16,34 @@ function fakeNotifier() {
   };
 }
 
-test('login health recovers: a failure latches to failing, a later success returns it to ok', () => {
+test('cold start: unknown -> ok updates health but sends no notification', () => {
+  const notifier = fakeNotifier();
+  const { health, noteLogin } = createHealthTracker(notifier, () => {});
+
+  assert.equal(health.hebitsLogin, 'unknown');
+  noteLogin(true);
+  assert.equal(health.hebitsLogin, 'ok');
+  assert.deepEqual(notifier.sent, []);
+  assert.deepEqual(notifier.resets, []);
+});
+
+test('ok -> failing sends a login alert', () => {
   const notifier = fakeNotifier();
   const logs = [];
   const { health, noteLogin } = createHealthTracker(notifier, (m) => logs.push(m));
 
+  noteLogin(true); // reach 'ok' silently first
   noteLogin(false, 'Jackett search: HTTP 500');
   assert.equal(health.hebitsLogin, 'failing');
   assert.equal(health.error, 'Jackett search: HTTP 500');
   assert.deepEqual(notifier.sent.map((s) => s.kind), ['login']);
+});
 
-  // A second failure while already failing must not re-fire (state unchanged).
-  noteLogin(false, 'Jackett search: HTTP 500');
-  assert.equal(health.hebitsLogin, 'failing');
-  assert.deepEqual(notifier.sent.map((s) => s.kind), ['login']);
+test('failing -> ok sends login-ok and resets the login throttle', () => {
+  const notifier = fakeNotifier();
+  const { health, noteLogin } = createHealthTracker(notifier, () => {});
 
+  noteLogin(false, 'boom'); // reach 'failing' first
   noteLogin(true);
   assert.equal(health.hebitsLogin, 'ok');
   assert.equal(health.error, null);
@@ -38,12 +51,22 @@ test('login health recovers: a failure latches to failing, a later success retur
   assert.deepEqual(notifier.sent.map((s) => s.kind), ['login', 'login-ok']);
 });
 
-test('a first-ever success (cold start) transitions unknown -> ok and is not swallowed', () => {
+test('a repeated success while already ok sends nothing', () => {
   const notifier = fakeNotifier();
   const { health, noteLogin } = createHealthTracker(notifier, () => {});
 
-  assert.equal(health.hebitsLogin, 'unknown');
-  noteLogin(true);
+  noteLogin(true); // unknown -> ok
+  noteLogin(true); // ok -> ok, unchanged
   assert.equal(health.hebitsLogin, 'ok');
-  assert.deepEqual(notifier.sent.map((s) => s.kind), ['login-ok']);
+  assert.deepEqual(notifier.sent, []);
+});
+
+test('a repeated failure while already failing does not re-fire', () => {
+  const notifier = fakeNotifier();
+  const { health, noteLogin } = createHealthTracker(notifier, () => {});
+
+  noteLogin(false, 'boom');
+  noteLogin(false, 'boom again');
+  assert.equal(health.hebitsLogin, 'failing');
+  assert.deepEqual(notifier.sent.map((s) => s.kind), ['login']);
 });

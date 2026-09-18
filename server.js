@@ -502,7 +502,7 @@ async function restoreFocus() {
   store.save();
 }
 
-// ---- account building -----------------------------------------------------
+// ---- request handling -----------------------------------------------------
 
 const { health, noteLogin } = createHealthTracker(notifier, log);
 
