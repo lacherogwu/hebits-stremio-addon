@@ -24,6 +24,11 @@ test('find ids round-trip, including Hebrew names', () => {
   assert.equal(parseFindId('tt123'), null);
 });
 
+test('parseFindId returns null (not a throw) on a malformed % escape', () => {
+  assert.equal(parseFindId('hebits:find:%zz'), null);
+  assert.equal(parseFindId('%'), null);
+});
+
 test('kindOfItem uses the release name, then the category', () => {
   assert.equal(kindOfItem(results[0]), 'series');
   assert.equal(kindOfItem(results[4]), 'movie');

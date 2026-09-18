@@ -52,6 +52,11 @@ test('parseHebitsId is case-insensitive and rejects other id shapes', () => {
   assert.equal(parseHebitsId('hebits:h:nothex'), null);
 });
 
+test('parseHebitsId returns null (not a throw) on a malformed % escape', () => {
+  assert.equal(parseHebitsId('hebits:h:%zz'), null);
+  assert.equal(parseHebitsId('%'), null);
+});
+
 test('kind and de-duplicated, ordered episode list', () => {
   assert.equal(kindOf(galis), 'series');
   assert.equal(kindOf(movie), 'movie');

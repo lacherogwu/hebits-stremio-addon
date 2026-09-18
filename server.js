@@ -73,23 +73,48 @@ const server = createServer(async (req, res) => {
     if (route === 'manifest.json') return json(res, 200, addon.manifest);
     let m = route.match(/^catalog\/(movie|series)\/(hebits-home|hebits-search)(?:-movies)?(?:\/([^/]*))?\.json$/);
     if (m) {
+      // A malformed `%` in the search text is a bad request from whoever built the URL,
+      // not a server error - decodeURIComponent throws URIError on it either way.
+      let extra;
+      try {
+        extra = m[3] && decodeURIComponent(m[3]);
+      } catch {
+        return json(res, 404, { error: 'not found' });
+      }
       const handler = m[2] === 'hebits-search' ? addon.handleSearchCatalog : addon.handleCatalog;
-      return json(res, 200, { metas: await handler(m[1], m[3] && decodeURIComponent(m[3]), baseUrl) });
+      return json(res, 200, { metas: await handler(m[1], extra, baseUrl) });
     }
     m = route.match(/^meta\/(movie|series)\/(.+)\.json$/);
     if (m) {
+      // Same malformed-`%` guard as above: a bad id is a 404, not a 500.
+      try {
+        decodeURIComponent(m[2]);
+      } catch {
+        return json(res, 404, { error: 'not found' });
+      }
       const find = parseFindId(m[2]);
       const meta = find ? await addon.handleFindMeta(m[1], find, baseUrl) : await addon.handleMeta(m[2], baseUrl);
       return meta ? json(res, 200, { meta }) : json(res, 404, { error: 'not found' });
     }
     m = route.match(/^stream\/(movie|series)\/(.+)\.json$/);
-    if (m && parseFindId(m[2])) return json(res, 200, { streams: await addon.handleFindStream(m[1], parseFindId(m[2]), baseUrl) });
-    if (m && parseHebitsId(m[2])) return json(res, 200, { streams: await addon.handleLibraryStream(m[1], m[2], baseUrl) });
-    if (m) return json(res, 200, { streams: await addon.handleStream(m[1], m[2], baseUrl) });
+    if (m) {
+      try {
+        decodeURIComponent(m[2]);
+      } catch {
+        return json(res, 404, { error: 'not found' });
+      }
+      if (parseFindId(m[2])) return json(res, 200, { streams: await addon.handleFindStream(m[1], parseFindId(m[2]), baseUrl) });
+      if (parseHebitsId(m[2])) return json(res, 200, { streams: await addon.handleLibraryStream(m[1], m[2], baseUrl) });
+      return json(res, 200, { streams: await addon.handleStream(m[1], m[2], baseUrl) });
+    }
     m = route.match(/^poster\/([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|\d+)$/);
     if (m) return await addon.handlePoster(res, m[1]);
     m = route.match(/^play\/h\/([0-9a-fA-F]{40}|[0-9a-fA-F]{64})\/(\d+)\/(\d+)$/);
     if (m) return await player.handlePlayLocal(req, res, m[1].toLowerCase(), m[2], m[3]);
+    // The search-failure `⚠️` stream's url (see streamsFor in lib/addon.js): tapping it
+    // used to hit no route at all (a bare JSON 404). Give it a readable message instead,
+    // through the same UserError path every other play failure already uses.
+    if (route === 'play/error/0/0') throw new UserError('Hebits search failed - check Jackett (the login cookie may have expired).');
     m = route.match(/^play\/(\d+)\/(\d+)\/(\d+)$/);
     if (m) return await player.handlePlay(req, res, m[1], m[2], m[3], url.searchParams);
     if (route === 'notify-test') {
@@ -139,4 +164,14 @@ setInterval(rotateLog, 3600_000);
 const runRestoreFocus = () => player.restoreFocus().catch((e) => log(`restore focus: ${e.message}`));
 runRestoreFocus();
 setInterval(runRestoreFocus, 30_000);
+
+// The default port collides with the AirPlay Receiver service on macOS (see the README),
+// so a first run there is a likely EADDRINUSE - explain it instead of a raw stack dump.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    log(`port ${cfg.port} is already in use. Change "port" in config.json (see the README) and try again.`);
+    process.exit(1);
+  }
+  throw err;
+});
 server.listen(cfg.port, '0.0.0.0', () => log(`hebits addon v${VERSION} listening on :${cfg.port}`));
