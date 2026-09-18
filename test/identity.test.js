@@ -102,3 +102,72 @@ test('a lookup failure is swallowed, never thrown at the catalog', async () => {
   const e = await resolver.resolve({ hash: 'H', name: 'X' });
   assert.equal(e.imdb, undefined);
 });
+
+// A partial hit (Jackett has the release but its item carries no imdbid
+// attribute; Cinemeta cannot match either) must keep backing off, not settle at
+// attempts:0 forever -- otherwise it re-queries Hebits on every catalogue load.
+test('a partially-resolvable entry backs off, keeping the id it did find', async () => {
+  let jackettCalls = 0;
+  let cinemetaCalls = 0;
+  const cache = {};
+  const resolver = new IdentityResolver({
+    jackett: {
+      async search() {
+        jackettCalls++;
+        return [{ title: 'Some.Show.S02E04-GRP', hebitsId: '42' }]; // no imdb field
+      },
+    },
+    qbit: { async addTags() {} },
+    cinemetaSearch: async () => { cinemetaCalls++; return undefined; },
+    cache,
+    save: () => {},
+    log: () => {},
+    now: () => 1000,
+  });
+
+  const e1 = await resolver.resolve({ hash: 'H', name: 'Some.Show.S02E04-GRP' });
+  assert.equal(e1.hebitsId, '42');
+  assert.equal(e1.imdb, undefined);
+  assert.equal(jackettCalls, 1);
+  assert.equal(cinemetaCalls, 1);
+  assert.equal(cache.H.hebitsId, '42'); // what was found is not lost
+  assert.equal(cache.H.attempts, 1); // not pinned at 0 -- still backing off
+  assert.equal(cache.H.nextTryAt, 1000 + 5 * 60_000);
+
+  // A second resolve inside the backoff window must not call out again.
+  const e2 = await resolver.resolve({ hash: 'H', name: 'Some.Show.S02E04-GRP' });
+  assert.equal(e2.hebitsId, '42');
+  assert.equal(jackettCalls, 1);
+  assert.equal(cinemetaCalls, 1);
+  assert.equal(cache.H.attempts, 1);
+});
+
+test('once the backoff window passes, a partially-resolved entry retries and backs off further', async () => {
+  let jackettCalls = 0;
+  let time = 1000;
+  const cache = {};
+  const resolver = new IdentityResolver({
+    jackett: {
+      async search() {
+        jackettCalls++;
+        return [{ title: 'Some.Show.S02E04-GRP', hebitsId: '42' }];
+      },
+    },
+    qbit: { async addTags() {} },
+    cinemetaSearch: async () => undefined,
+    cache,
+    save: () => {},
+    log: () => {},
+    now: () => time,
+  });
+
+  await resolver.resolve({ hash: 'H', name: 'Some.Show.S02E04-GRP' });
+  assert.equal(jackettCalls, 1);
+  assert.equal(cache.H.attempts, 1);
+
+  time = cache.H.nextTryAt; // exactly when the retry becomes due
+  await resolver.resolve({ hash: 'H', name: 'Some.Show.S02E04-GRP' });
+  assert.equal(jackettCalls, 2);
+  assert.equal(cache.H.attempts, 2); // backs off further, not reset
+  assert.equal(cache.H.nextTryAt, time + 10 * 60_000);
+});
