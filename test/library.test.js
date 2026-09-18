@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHebitsId, kindOf, episodes, catalogMetas, metaFor, matchesSearch } from '../lib/library.js';
+import { parseHebitsId, libraryId, kindOf, episodes, catalogMetas, metaFor, matchesSearch } from '../lib/library.js';
 import { pickFile } from '../lib/parse.js';
 
 const galis = {
   hebitsId: '1001',
+  hash: '1111111111111111111111111111111111111111',
+  progress: 1,
   name: 'Galis.Complete.WS.PDTV-TVNETIL',
   imdb: 'tt3208182',
   files: [
@@ -17,18 +19,37 @@ const galis = {
 };
 const movie = {
   hebitsId: '1002',
+  hash: '2222222222222222222222222222222222222222',
+  progress: 0.43,
   name: 'Inception.2010.1080p.BluRay.DD+5.1.x264-playHD',
   files: [
     { path: 'Inception.2010.1080p/Inception.2010.1080p.mkv', length: 9e9 },
     { path: 'Inception.2010.1080p/Sample/sample.mkv', length: 5e7 },
   ],
 };
-const opts = { progress: new Map([['1001', 0.37]]), posterUrl: (e) => `p/${e.hebitsId}` };
+const opts = { posterUrl: (e) => `p/${e.hebitsId}` };
 
-test('parseHebitsId', () => {
-  assert.deepEqual(parseHebitsId('hebits:1001'), { hebitsId: '1001', season: undefined, episode: undefined });
-  assert.deepEqual(parseHebitsId('hebits%3A1001%3A3%3A13'), { hebitsId: '1001', season: 3, episode: 13 });
-  assert.equal(parseHebitsId('tt3208182:3:13'), null);
+test('libraryId keys on the infohash', () => {
+  assert.equal(libraryId(galis), 'hebits:h:1111111111111111111111111111111111111111');
+});
+
+test('parseHebitsId reads a v1 infohash, with and without an episode', () => {
+  const h = '1111111111111111111111111111111111111111';
+  assert.deepEqual(parseHebitsId(`hebits:h:${h}`), { hash: h, season: undefined, episode: undefined });
+  assert.deepEqual(parseHebitsId(`hebits:h:${h}:2:5`), { hash: h, season: 2, episode: 5 });
+});
+
+test('parseHebitsId reads a v2 infohash', () => {
+  const h = 'a'.repeat(64);
+  assert.equal(parseHebitsId(`hebits:h:${h}`).hash, h);
+});
+
+test('parseHebitsId is case-insensitive and rejects other id shapes', () => {
+  assert.equal(parseHebitsId('hebits:h:' + 'A'.repeat(40)).hash, 'a'.repeat(40));
+  assert.equal(parseHebitsId('hebits:1001'), null);
+  assert.equal(parseHebitsId('hebits:find:Z2FsaXM'), null);
+  assert.equal(parseHebitsId('tt3208182'), null);
+  assert.equal(parseHebitsId('hebits:h:nothex'), null);
 });
 
 test('kind and de-duplicated, ordered episode list', () => {
@@ -45,28 +66,33 @@ test('every listed episode resolves to a playable file', () => {
   for (const ep of episodes(galis)) assert.ok(pickFile(galis.files, ep), `S${ep.season}E${ep.episode}`);
 });
 
-test('catalog rows per type', () => {
-  const series = catalogMetas([movie, galis], 'series', opts);
-  assert.deepEqual(series.map((m) => [m.id, m.name]), [['hebits:1001', 'Galis (SD)']]);
-  assert.match(series[0].description, /Downloading 37%/);
-  const movies = catalogMetas([movie, galis], 'movie', { ...opts, progress: new Map([['1002', 1]]) });
-  assert.deepEqual(movies.map((m) => [m.id, m.name, m.poster]), [['hebits:1002', 'Inception (1080p)', 'p/1002']]);
-  assert.match(movies[0].description, /Ready at home/);
+test('catalog metas and episode ids use the infohash', () => {
+  const [meta] = catalogMetas([galis], 'series', { posterUrl: () => 'P' });
+  assert.equal(meta.id, 'hebits:h:1111111111111111111111111111111111111111');
+  const full = metaFor(galis, { posterUrl: () => 'P', extra: undefined });
+  assert.match(full.videos[0].id, /^hebits:h:1{40}:\d+:\d+$/);
+});
+
+test('progress is read off the entry', () => {
+  const [meta] = catalogMetas([movie], 'movie', { posterUrl: () => 'P' });
+  assert.match(meta.description, /Downloading 43%/);
+  const [seeding] = catalogMetas([galis], 'series', { posterUrl: () => 'P' });
+  assert.match(seeding.description, /Ready at home/);
 });
 
 test('series meta has one video per episode with hebits ids', () => {
-  const meta = metaFor(galis, { progress: 0.37, posterUrl: opts.posterUrl, extra: { description: 'Teen drama', background: 'bg' } });
+  const meta = metaFor(galis, { posterUrl: opts.posterUrl, extra: { description: 'Teen drama', background: 'bg' } });
   assert.equal(meta.type, 'series');
   assert.equal(meta.imdb_id, 'tt3208182');
   assert.equal(meta.background, 'bg');
-  assert.match(meta.description, /Downloading 37%[\s\S]*Teen drama/);
+  assert.match(meta.description, /Ready at home[\s\S]*Teen drama/);
   assert.deepEqual(meta.videos.map((v) => [v.id, v.season, v.episode]), [
-    ['hebits:1001:1:1', 1, 1],
-    ['hebits:1001:1:2', 1, 2],
-    ['hebits:1001:3:13', 3, 13],
+    ['hebits:h:1111111111111111111111111111111111111111:1:1', 1, 1],
+    ['hebits:h:1111111111111111111111111111111111111111:1:2', 1, 2],
+    ['hebits:h:1111111111111111111111111111111111111111:3:13', 3, 13],
   ]);
   assert.ok(meta.videos.every((v) => Date.parse(v.released) < Date.now()));
-  assert.equal(metaFor(movie, { progress: 1, posterUrl: opts.posterUrl }).videos, undefined);
+  assert.equal(metaFor(movie, { posterUrl: opts.posterUrl }).videos, undefined);
 });
 
 test('search matches display and release names loosely', () => {
