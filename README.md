@@ -108,9 +108,9 @@ environment variable. See `config.example.json` for a starting point.
 | `qbitUrl` | `http://127.0.0.1:8080` | qBittorrent WebUI base URL |
 | `qbitUsername`, `qbitPassword` | empty | Only needed if qBittorrent's "bypass authentication for clients on localhost" is off |
 | `watchCategory` | `watch` | qBittorrent category for torrents this addon grabs |
-| `watchPath` | `~/Media/Hebits` | Save path for `watchCategory` |
+| `watchPath` | `~/hebits/watch` | Save path for `watchCategory` |
 | `notify` | `{"webhookUrl": ""}` | Alert transport; see [Notifications](#notifications) |
-| `torrentDir` | `~/Media/.torrents` | Where downloaded `.torrent` files are cached |
+| `torrentDir` | `<config dir>/torrents` | Where downloaded `.torrent` files are cached; created on startup if missing |
 | `logFile` | `<config dir>/addon.log` | If something redirects this process's stdout there, it's truncated (with a `.1` backup) once it passes 20 MB |
 
 Jackett's API key and the Hebits login cookie are both read from Jackett's own files, never
