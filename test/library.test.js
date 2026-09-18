@@ -80,6 +80,16 @@ test('progress is read off the entry', () => {
   assert.match(seeding.description, /Ready at home/);
 });
 
+test('progress 0 is not swallowed as falsy', () => {
+  const [meta] = catalogMetas([{ ...movie, progress: 0 }], 'movie', { posterUrl: () => 'P' });
+  assert.match(meta.description, /Downloading 0%/);
+});
+
+test('progress undefined (file list fetch failed) shows no status line', () => {
+  const [meta] = catalogMetas([{ ...movie, progress: undefined }], 'movie', { posterUrl: () => 'P' });
+  assert.equal(meta.description, movie.name);
+});
+
 test('series meta has one video per episode with hebits ids', () => {
   const meta = metaFor(galis, { posterUrl: opts.posterUrl, extra: { description: 'Teen drama', background: 'bg' } });
   assert.equal(meta.type, 'series');
