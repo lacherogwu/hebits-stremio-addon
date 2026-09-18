@@ -188,7 +188,7 @@ function searchFailed(type, id, err) {
 
 async function streamsFor({ type, items, season, episode, searchError, baseUrl, query }) {
   const local = await localStatus(items.map((it) => it.hebitsId), items);
-  warmUp(local, type === 'series' ? { season, episode } : null);
+  warmUp(local, type === 'series' ? { season, episode } : null).catch((e) => log(`warm-up: ${e.message}`));
   const d = await daily();
   const grabsLeft = Math.max(0, d.limit - d.used);
   const freeBytes = await qbit.freeSpace().catch(() => undefined);
@@ -619,6 +619,7 @@ function rotateLog() {
 
 rotateLog();
 setInterval(rotateLog, 3600_000);
-restoreFocus();
-setInterval(restoreFocus, 30_000);
+const runRestoreFocus = () => restoreFocus().catch((e) => log(`restore focus: ${e.message}`));
+runRestoreFocus();
+setInterval(runRestoreFocus, 30_000);
 server.listen(cfg.port, '0.0.0.0', () => log(`hebits addon v${VERSION} listening on :${cfg.port}`));
