@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+*.log
+config.json
+state.json
+*.torrent
+CLAUDE.local.md
