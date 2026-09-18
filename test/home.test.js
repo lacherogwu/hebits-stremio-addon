@@ -37,6 +37,25 @@ test('an untagged torrent still produces a usable entry', () => {
   assert.equal(e.name, 'Galis.Complete.WS.PDTV-TVNETIL');
 });
 
+// decodeURIComponent throws on a malformed percent-sequence; a Hebits tracker is still
+// findable in the raw, still-encoded magnet string, so isHebitsTorrent must not decode.
+const malformed = {
+  ...hebits, hash: 'cccc',
+  magnet_uri: 'magnet:?xt=urn:btih:cccc&dn=100%&tr=https%3A%2F%2Ftracker.hebits.net%2FKEY%2Fannounce',
+};
+
+test('a malformed magnet does not crash isHebitsTorrent', () => {
+  assert.doesNotThrow(() => isHebitsTorrent(malformed));
+  assert.equal(isHebitsTorrent(malformed), true);
+});
+
+test('one malformed torrent does not take down the whole catalogue', async () => {
+  const lib = new HomeLibrary(fakeQbit([malformed, hebits]));
+  const entries = await lib.entries();
+  assert.equal(entries.length, 2);
+  assert.ok(entries.some((e) => e.hash === 'aaaa'));
+});
+
 function fakeQbit(torrents) {
   let fileCalls = 0;
   return {
