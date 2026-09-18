@@ -17,6 +17,7 @@ import { buildStreams } from './lib/streams.js';
 import { serveFile } from './lib/streamer.js';
 import { focusPlan, restorePlan, shouldRestore, NORMAL, TOP } from './lib/focus.js';
 import { HebitsSite } from './lib/hebits.js';
+import { createHealthTracker } from './lib/health.js';
 
 const cfg = loadConfig();
 const store = new Store(CONFIG_DIR, cfg.timezone);
@@ -156,6 +157,7 @@ async function handleStream(type, rawId, baseUrl) {
   let searchError;
   try {
     items = (await jackett.forTitle(type, imdb, season)).filter((it) => !it.imdb || it.imdb === imdb);
+    searchOk();
   } catch (err) {
     searchError = searchFailed(type, rawId, err);
   }
@@ -168,6 +170,13 @@ async function handleStream(type, rawId, baseUrl) {
   }
 
   return streamsFor({ type, items, season, episode, searchError, baseUrl, query: `?imdb=${imdb}&type=${type}` });
+}
+
+// A Jackett search only returns results when the indexer login works (parseTorznab
+// throws on a Torznab <error>), so a search that completes is evidence the cookie is
+// still good - the mirror image of searchFailed below.
+function searchOk() {
+  noteLogin(true);
 }
 
 function searchFailed(type, id, err) {
@@ -213,7 +222,9 @@ async function handleSearchCatalog(type, extraPath, baseUrl) {
   const q = new URLSearchParams(extraPath || '').get('search')?.trim();
   if (!q) return [];
   try {
-    return groupResults(await jackett.search({ t: 'search', q }), type, { posterUrl: (id) => `${baseUrl}/poster/${id}` });
+    const results = await jackett.search({ t: 'search', q });
+    searchOk();
+    return groupResults(results, type, { posterUrl: (id) => `${baseUrl}/poster/${id}` });
   } catch (err) {
     searchFailed(type, `"${q}"`, err);
     return [];
@@ -232,6 +243,7 @@ async function findItems(name, type, { season, allSeasons = false } = {}) {
   };
   const bySeason = (n) => jackett.search({ t: 'tvsearch', q: name, season: String(n) });
   const [first] = await Promise.all([jackett.search({ t: 'search', q: name }), season && bySeason(season).then(collect)]);
+  searchOk();
   collect(first);
   if (type === 'series' && allSeasons && first.length >= PAGE_SIZE) {
     const seasonOf = (it) => seasonInfo(it.title)?.season ?? seasonInfo(it.title)?.to ?? 0;
@@ -492,20 +504,7 @@ async function restoreFocus() {
 
 // ---- account building -----------------------------------------------------
 
-// Login health: set by every call that talks to Hebits.
-const health = { hebitsLogin: 'unknown', checkedAt: null, error: null };
-function noteLogin(ok, err) {
-  const was = health.hebitsLogin;
-  Object.assign(health, { hebitsLogin: ok ? 'ok' : 'failing', checkedAt: new Date().toISOString(), error: ok ? null : err });
-  if (was === health.hebitsLogin) return;
-  if (ok) {
-    notifier.reset('login');
-    notifier.send('login-ok', 'Hebits login works again', 'Searching resumed.', { force: true });
-  } else {
-    log(`hebits login problem: ${err}`);
-    notifier.send('login', 'Hebits login stopped working', `Update the HeBits indexer cookie in Jackett. (${err})`);
-  }
-}
+const { health, noteLogin } = createHealthTracker(notifier, log);
 
 function tokenOk(given) {
   const a = Buffer.from(given || '');
