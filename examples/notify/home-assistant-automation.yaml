@@ -1,7 +1,7 @@
 # Settings → Automations → Create → ⋮ Edit in YAML. Use the same random id as
 # notify.webhookUrl in config.json, and your phone's notify action.
-alias: Hebits Account Builder alerts
-description: Alerts from the Hebits account builder
+alias: Hebits Stremio Addon alerts
+description: Alerts from the Hebits Stremio addon
 triggers:
   - trigger: webhook
     webhook_id: <random-id>
