@@ -9,6 +9,7 @@ import { Store } from './lib/store.js';
 import { Jackett } from './lib/jackett.js';
 import { Notifier } from './lib/notify.js';
 import { QBit } from './lib/qbit.js';
+import { buildTags, parseTags } from './lib/tags.js';
 import { readTorrent } from './lib/bencode.js';
 import { pickFile, VIDEO_EXT, showName, seasonInfo } from './lib/parse.js';
 import { parseHebitsId, kindOf, catalogMetas, metaFor, matchesSearch } from './lib/library.js';
@@ -130,6 +131,8 @@ async function ensureTorrent(hebitsId, meta, { category = cfg.watchCategory, sav
     }
     store.putTorrent(hebitsId, { ...meta, hash: t.infoHash, name: t.name, files: t.files, pieceLength: t.pieceLength });
     for (let i = 0; i < 40 && !(await qbit.torrent(t.infoHash)); i++) await sleep(250);
+    // Identity for anything reading qBittorrent later, including the account builder.
+    await qbit.addTags(t.infoHash, buildTags({ hebitsId, imdb: meta.imdb })).catch((e) => log(`tag ${hebitsId}: ${e.message}`));
     return store.torrent(hebitsId);
   });
 }
