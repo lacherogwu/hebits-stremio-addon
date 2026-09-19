@@ -80,20 +80,23 @@ function json(c: Context<AppEnv>, code: ContentfulStatusCode, body: unknown): Re
 
 // A stray `%` in a route segment is a malformed request from whoever built the URL, not a
 // server error - decodeURIComponent throws URIError on it either way. The handlers below
-// take the RAW (still-encoded) id, exactly as server.js's `m[2]` did, so only this
-// function's boolean return is used by a caller, never the decoded string.
+// take the RAW (still-encoded) id, exactly as server.js's `m[2]` did, so only whether this
+// returns null is used by a caller, never the decoded string itself.
 //
-// The decoded length is folded into the return expression (rather than a bare
-// `decodeURIComponent(s);` statement whose result nothing consumes) because rolldown's
-// dead-code elimination cannot see that decodeURIComponent can throw: a call whose return
-// value is provably unused gets removed as "pure", taking the whole try/catch - and this
-// guard - out of the shipped bundle. See test/bundle.test.ts, which exercises dist/ for
-// exactly this class of bug.
-function isDecodable(s: string): boolean {
+// Returns the decoded value (never a bare `decodeURIComponent(s);` statement, nor a
+// tautology like `.length >= 0` that only exists to have *a* return value) because
+// rolldown's dead-code elimination cannot see that decodeURIComponent can throw: a call
+// whose result is provably unused - or whose result the optimizer can fold to a constant
+// regardless of input - gets removed as "pure", taking the whole try/catch, and this guard,
+// out of the shipped bundle. A caller branching on `=== null` genuinely depends on a value
+// that cannot be computed without calling decodeURIComponent on a runtime string, so
+// there's nothing left for an optimizer to fold away. See test/bundle.test.ts, which
+// exercises dist/ for exactly this class of bug.
+function decodeOrNull(s: string): string | null {
   try {
-    return decodeURIComponent(s).length >= 0;
+    return decodeURIComponent(s);
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -209,7 +212,7 @@ app.all('*', async (c) => {
       const [, type, rawId] = m;
       if (!isMediaType(type) || rawId === undefined) return json(c, 404, { error: 'not found' });
       // Same malformed-`%` guard as above: a bad id is a 404, not a 500.
-      if (!isDecodable(rawId)) return json(c, 404, { error: 'not found' });
+      if (decodeOrNull(rawId) === null) return json(c, 404, { error: 'not found' });
       const find = parseFindId(rawId);
       const meta = find ? await addon.handleFindMeta(type, find, baseUrl) : await addon.handleMeta(rawId, baseUrl);
       return meta ? json(c, 200, { meta }) : json(c, 404, { error: 'not found' });
@@ -219,7 +222,7 @@ app.all('*', async (c) => {
     if (m) {
       const [, type, rawId] = m;
       if (!isMediaType(type) || rawId === undefined) return json(c, 404, { error: 'not found' });
-      if (!isDecodable(rawId)) return json(c, 404, { error: 'not found' });
+      if (decodeOrNull(rawId) === null) return json(c, 404, { error: 'not found' });
       const findRef = parseFindId(rawId);
       if (findRef) return json(c, 200, { streams: await addon.handleFindStream(type, findRef, baseUrl) });
       if (parseHebitsId(rawId)) return json(c, 200, { streams: await addon.handleLibraryStream(type, rawId, baseUrl) });
