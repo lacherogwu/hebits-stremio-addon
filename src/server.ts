@@ -372,8 +372,18 @@ const [ALREADY_SENT_HEADER = 'x-hono-already-sent'] = [...RESPONSE_ALREADY_SENT.
 // with no cache key) puts node-server back on the branch that writes nothing, which is
 // what a raw-written response needs. It must be that object: a freshly constructed
 // `new Response(null, …)` here would be the optimised class again and reintroduce the bug.
+//
+// Only HEAD, and that bound is deliberate rather than an optimisation: reading `.headers`
+// on an optimised Response is not free of side effects - its getter replaces the cached
+// header record with a Headers instance in place, which lowercases every header NAME on
+// the way out. Header names are case-insensitive, so nothing breaks, but the three routes
+// that hand Hono a plain record (the OPTIONS preflight, the /cookie page, and c.text()
+// error bodies) would go out on the wire spelled differently than before this branch, and
+// the wire bytes are exactly what this rewrite promises not to change. A HEAD is the only
+// request Hono wraps, so it is the only one that needs looking at.
 const fetchWithRawHead: typeof app.fetch = async (request, env, ctx) => {
   const res = await app.fetch(request, env, ctx);
+  if (request.method !== 'HEAD') return res;
   return res.headers.get(ALREADY_SENT_HEADER) ? RESPONSE_ALREADY_SENT : res;
 };
 

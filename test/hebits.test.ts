@@ -91,12 +91,24 @@ test('a cookie rotated after construction is carried on the next request, with n
 // default is one request every two seconds ("Nothing here is latency-sensitive" - true for
 // the sibling builder service it was written for, false for a TV waiting on a stream
 // list), and makeHebits passing nothing meant a measured 6.0 s for an ordinary stream list
-// and 22-62 s for a find card. Both bounds below are load-bearing: the upper one fails if
-// the client default comes back (four calls would take six seconds), the lower one fails
-// if the throttle is dropped altogether, which is the failure that could get the account
-// banned. checkLogin() is used because it bypasses the response cache, so each call really
-// goes out.
-test('makeHebits throttles the tracker itself: several calls per second, never unbounded', async () => {
+// and 22-62 s for a find card.
+//
+// Read the bounds below for what they are: this pins the CHOSEN value - 3 requests per
+// second - not merely that some throttle exists. That is on purpose. How hard this process
+// may hit a private tracker is a safety-critical constant with the account at stake, so
+// changing it should have to be done here, deliberately, in the same commit as the change
+// itself. Raising it is a decision to take with the tracker (hebits-client's README says
+// as much) and then reflect here on purpose - do NOT loosen this back to "is it bounded at
+// all", which is the shape that let the client's default ship unnoticed in the first place.
+//
+// The upper bound is a wall-clock assertion: four calls at 3-per-second take ~1 s, and 2 s
+// is the headroom for a loaded machine. A failure just over 2 s is a slow runner, not a
+// code fault; a failure at ~6 s is the client's 1-per-2s default coming back. The lower
+// bound fails if the throttle is dropped altogether, which is the failure that could get
+// the account banned.
+//
+// checkLogin() is used because it bypasses the response cache, so each call really goes out.
+test('makeHebits throttles the tracker to the chosen 3 requests per second', async () => {
   const cookiePath = join(mkdtempSync(join(tmpdir(), 'hebits-cookie-')), 'cookie.txt');
   writeFileSync(cookiePath, 'session=x\n');
   const hebits = makeHebits({ cookiePath });
@@ -109,6 +121,6 @@ test('makeHebits throttles the tracker itself: several calls per second, never u
   const elapsed = Date.now() - started;
 
   expect(sentCookies.length).toBe(4); // four real requests, not one collapsed call
-  expect(elapsed).toBeGreaterThanOrEqual(900); // the fourth waited for the next window
-  expect(elapsed).toBeLessThan(2_000); // ...but nothing like the client's 1-per-2s default
+  expect(elapsed).toBeGreaterThanOrEqual(900); // the fourth waited out a full interval: 3 per second, not more
+  expect(elapsed).toBeLessThan(2_000); // ...and not the client's 1-per-2s default, which would be ~6 s
 });

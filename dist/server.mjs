@@ -13047,6 +13047,7 @@ setInterval(runRestoreFocus, 3e4);
 const [ALREADY_SENT_HEADER = "x-hono-already-sent"] = [...RESPONSE_ALREADY_SENT.headers.keys()];
 const fetchWithRawHead = async (request, env, ctx) => {
 	const res = await app.fetch(request, env, ctx);
+	if (request.method !== "HEAD") return res;
 	return res.headers.get(ALREADY_SENT_HEADER) ? RESPONSE_ALREADY_SENT : res;
 };
 serve({

@@ -60,6 +60,14 @@ function rawGet(port: number, path: string): Promise<RawResponse> {
 // so this drives the socket by hand. Resolves with one entry per HTTP response that
 // arrived, so "the second request got nothing" is visible as a missing entry rather than
 // as a hang.
+// One entry per response seen so far. The `^` anchor counts a status line only at the
+// start of a line, which holds for the two routes below because both answer chunked, so
+// the second response's status line follows a `\r\n`. A route that answered with a
+// Content-Length body could leave the next status line mid-line and be counted as 0 - i.e.
+// adding a route here can make this report ONE response when two arrived. That direction
+// is safe (it fails a passing implementation, it can never pass a broken one), so it is
+// left alone rather than made cleverer: if a newly added route fails these tests, check
+// the raw bytes before believing the server dropped the connection.
 function statusLines(raw: string): string[] {
   return raw.match(/^HTTP\/1\.1 \d+/gm) ?? [];
 }
