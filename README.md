@@ -16,41 +16,41 @@ qBittorrent instance. They don't talk to each other and neither depends on the o
 — they share state only through tags written into qBittorrent (see [Tags](#tags) below).
 
 ```
- Stremio / Nuvio ──stream list──►  this addon :7000 ──► Jackett :9117 ──cookie──► hebits.net
-        │                              │   │
-        └────────── plays file ◄───────┘   └──► qBittorrent :8080 (downloads + seeds forever)
+ Stremio / Nuvio ──stream list──►  this addon :7000 ──cookie──► hebits.net
+        │                              │
+        └────────── plays file ◄───────┴──► qBittorrent :8080 (downloads + seeds forever)
              (home network)
   addon ──login alert──► your notification transport (see Notifications)
 ```
 
-Jackett already holds a login cookie for Hebits; this addon never talks to hebits.net or
-qBittorrent's tracker directly except to read that cookie and to search/download/stream
-through Jackett and qBittorrent respectively.
+The addon talks to Hebits directly through the [`hebits-client`](https://www.npmjs.com/package/hebits-client)
+library, authenticating with a session cookie read from the file at `cookiePath`. That cookie
+is the only credential involved, and it is installed through the addon's own
+[`/cookie` page](#the-hebits-login-cookie).
 
 ## Catalogs
 
 The addon exposes four catalogs:
 
-- **🏠 Hebits at home** / **🏠 Hebits movies at home** — built from what's actually sitting in
-  qBittorrent right now (`lib/home.js`, `lib/library.js`), not from an external database. This
-  is right even for shows whose IMDb/Cinemeta metadata is incomplete or missing. Both are
-  searchable.
-- **🔎 Hebits series** / **🔎 Hebits movies** — searches all of Hebits through Jackett and
-  groups the uploads into one card per title (`lib/search.js`). Covers Israeli titles that
-  IMDb/Cinemeta don't know about. Titles with a recovered IMDb id still get the usual details
-  page.
+- **Hebits at home** / **Hebits movies at home** — built from what's actually sitting in
+  qBittorrent right now (`src/home.ts`, `src/library.ts`), not from an external database.
+  This is right even for shows whose IMDb/Cinemeta metadata is incomplete or missing. Both
+  are searchable.
+- **Hebits series** / **Hebits movies** — searches all of Hebits and groups the uploads into
+  one card per title (`src/search.ts`). Covers Israeli titles that IMDb/Cinemeta don't know
+  about. Titles with a recovered IMDb id still get the usual details page.
 
 ## How playback works
 
-- The first play of a title downloads its `.torrent` through Jackett (Hebits only serves
-  private torrents; the addon refuses anything else) and adds it to qBittorrent.
+- The first play of a title downloads its `.torrent` through `hebits-client` (Hebits only
+  serves private torrents; the addon refuses anything else) and adds it to qBittorrent.
 - The file is served over HTTP with byte-range support. **Bytes are only sent once
-  qBittorrent reports the piece that holds them as complete** (`lib/streamer.js`) — this is
+  qBittorrent reports the piece that holds them as complete** (`src/streamer.ts`) — this is
   piece-gated streaming, not just "wait for the file to exist."
 - The exact byte offset of the requested file inside the torrent's piece layout comes from
-  parsing the exported `.torrent` itself (`lib/bencode.js`), pad files included, so this works
-  even inside multi-file season packs.
-- Whichever file is being watched gets **top download priority** (`lib/focus.js`); for
+  parsing the exported `.torrent` itself (`src/bencode.ts`, `src/torrentmeta.ts`), pad files
+  included, so this works even inside multi-file season packs.
+- Whichever file is being watched gets **top download priority** (`src/focus.ts`); for
   single-video torrents (a movie), first/last-piece priority is also raised so playback can
   start near-instantly.
 - **This addon never pauses a file itself.** Pausing other files to prioritize one measurably
@@ -64,22 +64,40 @@ The addon exposes four catalogs:
 
 ## Requirements
 
-- Node.js ≥ 22
-- [Jackett](https://github.com/Jackett/Jackett), with a **HeBits** Torznab indexer configured
-  and logged in (a valid Hebits browser cookie set on the indexer)
-- [qBittorrent](https://www.qbittorrent.org/), with the WebUI enabled
+**On the machine that runs the addon:** Node.js ≥ 22, and
+[qBittorrent](https://www.qbittorrent.org/) with the WebUI enabled. Nothing else — no
+indexer, no proxy, no `node_modules`.
+
+**To build and deploy it:** Node.js ≥ 22 and npm, on whatever machine you develop on.
 
 ## Install
+
+The addon ships as **one bundled file**, `dist/server.mjs`. The two machines have different
+requirements, and it's worth being precise about which is which:
+
+- **Developer machine** — needs `npm install`, and a build step to produce the bundle.
+- **Target machine** — needs only `dist/server.mjs` and a Node runtime. There is no
+  `node_modules`, no `package.json` and no npm on the target; the four runtime dependencies
+  are compiled into the single file. That is the point of the deployment design: nothing to
+  install, nothing to keep in sync, and an upgrade is one file copy.
+
+Build it:
 
 ```bash
 git clone <this repo>
 cd hebits-stremio-addon
-node server.js
+npm install
+npm run build        # writes dist/server.mjs
 ```
 
-No build step, no `npm install` — the repo has zero dependencies. The first run creates
-`~/.config/hebits-stremio-addon/config.json` with a random `token` and prints either the
-listening banner or an error explaining what to fix (see [Configuration](#configuration)).
+Run it:
+
+```bash
+node dist/server.mjs
+```
+
+The first run creates `~/.config/hebits-stremio-addon/config.json` with a random `token` and
+prints the listening banner (see [Configuration](#configuration)).
 
 The default port, `7000`, collides with the AirPlay Receiver service on macOS. If the addon
 exits complaining the port is already in use, set `port` to something else (e.g. `7001`) in
@@ -94,10 +112,64 @@ http://<host>:7000/<token>/manifest.json
 where `<host>` is this machine's address on your network and `<token>` is the value written
 to `config.json`.
 
+## Deploying
+
+```bash
+npm run deploy
+```
+
+`scripts/deploy.sh` runs the typecheck and the tests, builds the bundle, copies
+`dist/server.mjs` to the target over `rsync`, restarts the LaunchAgent with
+`launchctl kickstart`, and then waits until the running service answers its manifest as the
+version that was just built — matching on both the version string and the PID launchd
+started, so a same-version redeploy against a process that never actually restarted still
+fails rather than reporting success.
+
+The target is an SSH host name. Set it once in `.deploy-host` (git-ignored), or per-run in
+the environment:
+
+```bash
+echo my-ssh-host > .deploy-host     # once
+DEPLOY_HOST=my-ssh-host npm run deploy   # or per-run; overrides .deploy-host
+```
+
+### One-time LaunchAgent setup
+
+The first deploy to a fresh target will report that no LaunchAgent is installed and print
+these steps. `deploy/org.user.hebits-addon.plist` is a template containing `__HOME__`
+placeholders.
+
+1. Copy the template over, still unsubstituted:
+
+   ```bash
+   scp deploy/org.user.hebits-addon.plist "<ssh-host>:/tmp/org.user.hebits-addon.plist"
+   ```
+
+2. Substitute and load it **on the target**. The substitution must happen there, not
+   locally: the two machines' home directories can differ, and a plist built against the
+   wrong `$HOME` points every path at an account that doesn't exist, so the service never
+   spawns. The single quotes below keep `$HOME` and `$(id -u)` unexpanded until they reach
+   the target:
+
+   ```bash
+   ssh "<ssh-host>" 'mkdir -p ~/Library/LaunchAgents \
+     && sed "s|__HOME__|$HOME|g" /tmp/org.user.hebits-addon.plist \
+        > ~/Library/LaunchAgents/org.user.hebits-addon.plist \
+     && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.user.hebits-addon.plist'
+   ```
+
+Then re-run `npm run deploy`.
+
+The plist expects Node at `~/Applications/node/bin/node` and the bundle at
+`~/Applications/hebits-stremio-addon/dist/server.mjs`, and points launchd's stdout and
+stderr at `logFile`. It sets `KeepAlive`, so the service restarts on its own if it exits —
+which is why nothing on the startup path is allowed to throw (see
+[When config.json is broken](#when-configjson-is-broken)).
+
 ## Configuration
 
 Settings live in `~/.config/hebits-stremio-addon/config.json` (mode `600`), overriding the
-defaults in `lib/config.js`. Override the directory itself with the `HEBITS_ADDON_DIR`
+defaults in `src/config.ts`. Override the directory itself with the `HEBITS_ADDON_DIR`
 environment variable. See `deploy/config.example.json` for a starting point.
 
 | Key | Default | Meaning |
@@ -108,48 +180,105 @@ environment variable. See `deploy/config.example.json` for a starting point.
 | `dailyLimitByDay` | `{}` | Per-day overrides, e.g. `{"2026-09-17": 5}` for a new account's first day |
 | `minFreeGB` | `20` | Refuse a new download that would leave less free space than this |
 | `timezone` | `Asia/Jerusalem` | Used for the daily download counter's day boundary |
-| `jackettUrl` | `http://127.0.0.1:9117` | Jackett base URL |
-| `jackettIndexer` | `hebits` | Jackett Torznab indexer id |
-| `jackettConfig` | Jackett's `ServerConfig.json`, auto-located per OS | Where the Jackett API key is read from |
-| `jackettIndexerConfig` | Jackett's indexer config, auto-located per OS | Where the Hebits login cookie is read from |
-| `jackettApiKey` | read from `jackettConfig` | Set this directly to skip that read |
+| `cookiePath` | `<config dir>/cookie.txt` | File holding the Hebits session cookie; written by the `/cookie` page |
 | `qbitUrl` | `http://127.0.0.1:8080` | qBittorrent WebUI base URL |
 | `qbitUsername`, `qbitPassword` | empty | Only needed if qBittorrent's "bypass authentication for clients on localhost" is off |
 | `watchCategory` | `watch` | qBittorrent category for torrents this addon grabs |
 | `watchPath` | `~/hebits/watch` | Save path for `watchCategory` |
 | `notify` | `{"webhookUrl": ""}` | Alert transport; see [Notifications](#notifications) |
 | `torrentDir` | `<config dir>/torrents` | Where downloaded `.torrent` files are cached; created on startup if missing |
-| `logFile` | `<config dir>/addon.log` | If something redirects this process's stdout there, it's truncated (with a `.1` backup) once it passes 20 MB |
+| `logFile` | `<config dir>/addon.log` | Truncated in place (with a `.1` backup) once it passes 20 MB |
 
-Jackett's API key and the Hebits login cookie are both read from Jackett's own files, never
-stored in this repository.
+`cookiePath` may point at a file shared with another service — `hebits-account-builder` uses
+the same cookie — but it defaults inside the config directory so the addon is self-contained.
 
-### Jackett's API key
+### When config.json is broken
 
-On startup, if `jackettApiKey` isn't set in `config.json`, this addon reads it from Jackett's
-`ServerConfig.json`. If that file can't be read (Jackett isn't installed yet, or lives
-somewhere non-standard) or has no key set, the addon refuses to start and prints exactly
-what's wrong and where — set `jackettApiKey` and `jackettConfig` in `config.json` to work
-around either case.
+`config.json` is hand-edited, and launchd restarts the service on exit, so a config error
+that threw at startup would become a silent restart loop: the process would die before the
+notifier exists, so no alert would ever fire. It would simply be down. Nothing on the load
+path is therefore allowed to throw.
 
-### Fixing an expired Hebits login
+- **One bad field** — a wrong type, e.g. `"minFreeGB": "20"` — falls back to its default.
+  Every other field, *including keys this version of the code doesn't recognize*, is kept
+  untouched.
+- **A file that won't parse at all**, or that parses into something other than a JSON object
+  (`null`, a number, an array), is moved aside to `config.json.bad-<timestamp>` and the
+  service starts on defaults. The original bytes are preserved for you to fix; recovery is
+  usually correcting one character and moving the file back.
+- **The token is preserved where it can be identified unambiguously.** Rotating it would
+  break the URL of every already-installed client — painful on a TV. So the raw text of an
+  unparseable file is scanned for a value of exactly the shape the addon generates (32
+  lowercase hex characters). If exactly one such value is found it is kept; if none or
+  several are found, a fresh token is generated rather than guessing. (Several is a real
+  case: a `notify.headers` entry named `token` looks identical to a text search.)
 
-This addon deliberately **cannot** write the Hebits login cookie — it only reads it, from
-Jackett's own indexer config. When the cookie expires, search and grab both fail (a `⚠️`
-stream entry appears, and, if `notify` is configured, an alert fires), and `/status` reports
-`health.hebitsLogin: "failing"`.
+Every one of these is logged **and** reported in `configIssues` on `/status`, so a typo
+surfaces somewhere you will actually look rather than scrolling past in a log. `state.json`
+is guarded the same way and reports through `storeIssue`; it is a cache, not a source of
+truth, so losing it costs only today's fallback download count and any remembered identity
+lookups.
 
-Fix it in **Jackett's own web UI**, not here: open `http://<jackett-host>:9117`, edit the
-HeBits indexer, and paste in a fresh `cookie` value from a logged-in browser session on
-hebits.net. This addon picks up the change on its next request — no restart needed.
+## Routes
+
+Every route sits behind the secret token: `http://<host>:7000/<token>/…`
+
+| Route | Purpose |
+|---|---|
+| `manifest.json` | Stremio manifest — this is the URL you install |
+| `catalog/…`, `meta/…`, `stream/…` | The Stremio protocol proper |
+| `poster/<ref>`, `play/…` | Posters, and the piece-gated byte-range stream |
+| `cookie` | The [cookie page](#the-hebits-login-cookie) |
+| `status` | Version, account standing, downloads used today, free disk, `configIssues`, `storeIssue` and login health |
+| `notify-test` | Sends a test alert through whatever `notify` is configured (see [Notifications](#notifications)) |
+
+## The Hebits login cookie
+
+The addon authenticates to Hebits with a browser session cookie, stored in the file at
+`cookiePath` (mode `600`). Install or replace it at:
+
+```
+http://<host>:7000/<token>/cookie
+```
+
+The page shows the current login status and tells you how to copy the cookie out of your
+browser's DevTools. A pasted cookie is **verified before it is saved**: a throwaway client is
+built around the candidate and used to check the login, so a bad paste is rejected instead of
+silently stored, and never overwrites a cookie that still works.
+
+A saved cookie **takes effect on the very next request — there is no restart.** The cookie is
+read from the file at call time rather than captured at startup, so fixing an expired login
+is one paste and nothing else.
+
+When the cookie does expire, searches fail, a warning entry appears in the stream list, an
+alert fires if `notify` is configured, and `/status` reports `health.hebitsLogin: "failing"`.
+
+The cookie is a credential: it is never logged, never rendered back into a page, and the file
+it lives in is git-ignored.
 
 ## Notifications
 
-Set `notify.webhookUrl` to POST a JSON alert to any webhook (Home Assistant, ntfy, Discord,
-Telegram, ...), or `notify.command` (an argv array) to run a local command instead — both can
-be set at once. See `examples/notify/` for ready-made configs. This addon only ever sends the
-Hebits-login-health alert (fires on failure, fires again once it recovers) — test your
-transport any time at `http://<host>:7000/<token>/notify-test`.
+Configure a webhook, a local command, or both. Both fire on each alert; if neither is set,
+notifications are simply off. Test whatever you configure at
+`http://<host>:7000/<token>/notify-test`.
+
+| `notify` key | Meaning |
+|---|---|
+| `webhookUrl` | URL to POST the alert to. Setting this enables the webhook transport |
+| `method` | HTTP method, default `POST` |
+| `headers` | Extra request headers, merged over the default `content-type: application/json` |
+| `body` | Request body template (see below); the default sends `{"kind":…,"title":…,"message":…}` |
+| `command` | An argv array — `["notify-send", "{{title}}", "{{message}}"]` — run instead of, or as well as, the webhook |
+
+`body` and each element of `command` are templates. `{{title}}`, `{{message}}` and `{{kind}}`
+are substituted, and a prefix picks the escaping: `{{json:title}}` for a value inside a JSON
+string, `{{url:title}}` for a query parameter, plain `{{title}}` for raw. This is what makes
+one mechanism cover Home Assistant, ntfy, Discord, Telegram, Slack, Gotify and Pushover —
+they are all "POST to a URL" and differ only in body shape. Ready-made configs for several of
+them are in `examples/notify/`.
+
+The addon sends an alert when the Hebits login stops working, and again once it recovers.
+Repeats of the same alert kind are suppressed for six hours.
 
 ## Tags
 
@@ -161,7 +290,7 @@ they are, without depending on each other running.
 
 ## Torrent-client contract
 
-This addon talks to qBittorrent only through `lib/qbit.js`. Porting it to a different torrent
+This addon talks to qBittorrent only through `src/qbit.ts`. Porting it to a different torrent
 client means implementing the same surface:
 
 - List torrents, each with its tracker (or magnet URI, to detect Hebits torrents by
@@ -180,6 +309,63 @@ way to know which pieces are actually downloaded, and piece-gated streaming — 
 lets an unfinished torrent be watched safely, without ever serving a byte that hasn't arrived
 — is not possible on it.
 
+## Layout
+
+| File | What it holds |
+|---|---|
+| `src/server.ts` | HTTP entry point: token guard, routing, log rotation, startup |
+| `src/addon.ts` | The Stremio surface: manifest, catalogs, metas, streams, posters |
+| `src/config.ts` | Loading, validating and recovering `config.json`; reading and writing the cookie file |
+| `src/hebits.ts` | The boundary to `hebits-client` — where the client is built, and the field conversions that would change behaviour silently if done ad hoc |
+| `src/search.ts` | "Search all of Hebits", grouped into one card per title |
+| `src/home.ts` | The home library, derived from what qBittorrent holds |
+| `src/library.ts` | Catalog rows and episode lists for local torrents |
+| `src/identity.ts` | Recovering the identity of a torrent nobody tagged |
+| `src/streams.ts` | Turning search results and local state into Stremio stream objects |
+| `src/play.ts` | Playback: pick the file, raise its priority, serve it over ranges |
+| `src/streamer.ts` | The piece-gated HTTP range server |
+| `src/focus.ts` | Raising one file's priority while it's being watched, and putting it back |
+| `src/grab.ts` | Turning a Hebits id into a running torrent, and the daily allowance |
+| `src/qbit.ts` | The qBittorrent WebUI API client |
+| `src/torrentmeta.ts` | Byte-exact file layout, read from the exported `.torrent` |
+| `src/bencode.ts` | Minimal bencode reader: infohash, name, files with byte offsets |
+| `src/parse.ts` | Release-name and file-list parsing |
+| `src/tags.ts` | Torrent identity as qBittorrent tags |
+| `src/store.ts` | `state.json`: local cache and event log, never a source of truth |
+| `src/notify.ts` | Alerts over a webhook, a command, or both |
+| `src/health.ts` | Login health, and the alerts on it changing |
+| `src/cookie-page.ts` | The `/cookie` page |
+| `src/covers.ts` | Poster covers for torrents seen in search results |
+| `src/lock.ts` | A per-key async mutex |
+| `src/version.ts` | The version string the manifest and the deploy check compare against |
+
+Every file here has a matching `test/<name>.test.ts`, except `src/server.ts` — its routing
+and token guard are covered by `test/bundle.test.ts`, which spawns the built bundle and
+makes real HTTP requests against it. That is deliberate: a unit test importing
+`src/server.ts` would never run through the bundler, and so could not catch a guard that
+survives in the source but is optimized out of the shipped file.
+
+## Dependencies
+
+Four at runtime — [`hebits-client`](https://www.npmjs.com/package/hebits-client) (the
+tracker), [`hono`](https://hono.dev/) and `@hono/node-server` (HTTP), and
+[`zod`](https://zod.dev/) (validating `config.json`) — plus TypeScript, Vitest, tsdown and
+Biome for development. `npm run build` bundles all four into `dist/server.mjs`, which is the
+only file deployed.
+
+## Tests
+
+```bash
+npm test          # vitest, 218 tests
+npm run typecheck # tsc
+npm run lint      # biome
+```
+
+No network access required: the suite mocks qBittorrent and Hebits, and never touches a real
+torrent client or the tracker. `test/bundle.test.ts` additionally exercises the built
+`dist/server.mjs`, so that bundler optimizations can't quietly remove a runtime guard the
+source clearly has.
+
 ## Lessons learned
 
 - **Pre-allocation doubles disk usage on APFS.** With qBittorrent pre-allocation on, every
@@ -191,13 +377,4 @@ lets an unfinished torrent be watched safely, without ever serving a byte that h
   first few home-catalog rows up front, so move this addon's rows near the top of your
   reordering settings or they may never load.
 - **Android TV apps can't resolve `.local` mDNS names.** Point them at this machine's fixed
-  IP address instead.
-
-## Tests
-
-```bash
-node --test
-```
-
-No dependencies, no network access required — the test suite mocks Jackett, qBittorrent and
-Hebits.
+  LAN IP address instead.

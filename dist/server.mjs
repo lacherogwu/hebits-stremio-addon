@@ -10629,10 +10629,11 @@ function validateOptions(name, shape, fallback, received, issues) {
 		return {};
 	}
 	const out = { ...received };
+	const defaults = fallback;
 	for (const [key, schema] of Object.entries(shape)) {
 		if (!(key in out)) continue;
 		if (!schema.safeParse(out[key]).success) {
-			logIssue(`"${name}.${key}" is a ${typeOf(out[key])}, not the expected type - using default ${JSON.stringify(fallback[key])}`, issues);
+			logIssue(`"${name}.${key}" is a ${typeOf(out[key])}, not the expected type - using default ${JSON.stringify(defaults[key])}`, issues);
 			delete out[key];
 		}
 	}
@@ -12339,7 +12340,7 @@ function createHealthTracker(notifier, log) {
 		if (was === health.hebitsLogin) return;
 		if (!ok) {
 			log(`hebits login problem: ${err}`);
-			notifier.send("login", "Hebits login stopped working", `Update the HeBits indexer cookie in Jackett. (${err})`);
+			notifier.send("login", "Hebits login stopped working", `Paste a fresh cookie at the addon's /cookie page. (${err})`);
 		} else if (was === "failing") {
 			notifier.reset("login");
 			notifier.send("login-ok", "Hebits login works again", "Searching resumed.", { force: true });
