@@ -411,6 +411,35 @@ source clearly has.
 - **Android TV apps can't resolve `.local` mDNS names.** Point them at this machine's fixed
   LAN IP address instead.
 
+## Seeding, and what this addon never removes
+
+Every torrent this addon adds stays in qBittorrent and keeps seeding until **you** remove it.
+The addon adds, tags, raises a file's priority while you watch and puts it back, and reads —
+it never removes a torrent, never deletes data, and never stops a seed.
+
+That is deliberate. On a private tracker, deleting a torrent too early costs a hit-and-run
+warning, and enough of those cost your download privileges; a full disk costs you a download.
+The addon also cannot know which of your torrents matter. So it does the safe thing and
+leaves them alone.
+
+The consequence is that disk use only ever grows, and eventually `minFreeGB` starts refusing
+new downloads. Three ways to deal with that, in increasing order of effort:
+
+- **qBittorrent's own share limits** — set a ratio or seeding-time limit per category. Simple,
+  and it needs nothing else. Set it above what your tracker requires.
+- **Delete by hand** when the disk gets tight. Check the torrent has seeded long enough first.
+- **Let something release them for you.**
+  [`hebits-account-builder`](https://github.com/lacherogwu/hebits-account-builder) has a
+  release pass for exactly this. It needs no integration with this addon: it adopts any
+  torrent carrying the `hebits:<id>` tag that this addon already writes (see
+  [Tags](#tags)), then removes only *finished* ones that have seeded past the tracker's
+  requirement with a margin, worst-value-first, and only when free space is actually low.
+  Anything in the `watch` category — which is what this addon downloads into — is held
+  longer still, so a title you just watched is not the first thing to go.
+
+  It is a separate service with its own account-building policy, so take it as one option
+  rather than the answer; read its policy before pointing it at a live account.
+
 ## Related
 
 Independent projects, listed only because they may be useful — this addon requires none of
@@ -420,6 +449,7 @@ them and does not talk to them:
   addon is built on. Useful on its own.
 - [`hebits-account-builder`](https://github.com/lacherogwu/hebits-account-builder) — a
   separate service that builds a ratio on the same tracker (auto-grab, auto-seed,
-  auto-release). If you run both against one qBittorrent, they will recognize each other's
-  torrents through the [tags](#tags) above, but neither needs the other to be installed or
-  running.
+  auto-release). Useful here if you would rather not seed forever — see
+  [Seeding, and what this addon never removes](#seeding-and-what-this-addon-never-removes).
+  If you run both against one qBittorrent, they recognize each other's torrents through the
+  [tags](#tags) above, but neither needs the other to be installed or running.
