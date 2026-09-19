@@ -6,7 +6,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
+import { createServer as createNetServer, connect as netConnect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +52,48 @@ function rawGet(port: number, path: string): Promise<RawResponse> {
     req.on('error', reject);
   });
 }
+
+// Two requests on ONE socket, the second written only after the first has been fully
+// answered - a player's HEAD probe followed by its ranged GET, on the keep-alive
+// connection it already has open. node:http's own Agent would quietly open a second
+// connection when the server drops the first, which is exactly the failure being tested,
+// so this drives the socket by hand. Resolves with one entry per HTTP response that
+// arrived, so "the second request got nothing" is visible as a missing entry rather than
+// as a hang.
+function statusLines(raw: string): string[] {
+  return raw.match(/^HTTP\/1\.1 \d+/gm) ?? [];
+}
+
+function twoOnOneConnection(port: number, first: string, second: string, waitMs = 4_000): Promise<string[]> {
+  return new Promise((resolve) => {
+    const sock = netConnect(port, '127.0.0.1');
+    let raw = '';
+    let sentSecond = false;
+    const finish = (): void => {
+      clearTimeout(timer);
+      sock.destroy();
+      resolve(statusLines(raw));
+    };
+    const timer = setTimeout(finish, waitMs);
+    sock.on('connect', () => sock.write(first));
+    sock.on('data', (chunk: Buffer) => {
+      raw += chunk.toString('latin1');
+      // The first response is complete once its head has arrived (both routes here answer
+      // with a short body in one segment); only then does the second request go out, so
+      // this is a probe-then-fetch sequence and not HTTP pipelining.
+      if (!sentSecond && statusLines(raw).length === 1 && raw.includes('\r\n\r\n')) {
+        sentSecond = true;
+        setTimeout(() => sock.write(second), 50);
+      }
+      if (statusLines(raw).length === 2) setTimeout(finish, 50);
+    });
+    sock.on('error', finish); // a destroyed connection resolves with what did arrive
+    sock.on('close', finish);
+  });
+}
+
+const rawRequest = (method: string, path: string, extra = ''): string =>
+  `${method} ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n${extra}\r\n`;
 
 async function waitForPort(port: number, deadline: number, diagnostics: () => string): Promise<void> {
   for (;;) {
@@ -192,6 +234,41 @@ describe('the built bundle (dist/server.mjs)', () => {
   test('a malformed % in a meta id 404s, not a 500 or a wrong meta', async () => {
     const res = await rawGet(port, `/${token}/meta/movie/tt%zz.json`);
     expect(res.status).toBe(404);
+  });
+
+  // Players probe with HEAD and then fetch ranges on the SAME keep-alive connection -
+  // src/play.ts has a branch for exactly that probe. Hono answers a HEAD by re-dispatching
+  // it as a GET and wrapping the result in `new Response(null, res)`, which turned the raw
+  // routes' RESPONSE_ALREADY_SENT into @hono/node-server's optimised Response and sent it
+  // down the path that writes the head a second time: ERR_HTTP_HEADERS_SENT, and the socket
+  // destroyed under a response the handler had already written and ended. The HEAD's own
+  // answer looked perfect; what died was the next request on that connection. So this
+  // asserts on the SECOND response, and drives one socket by hand - node:http's Agent would
+  // transparently open a fresh connection after the server dropped the first, which is the
+  // very failure under test.
+  //
+  // qBittorrent is unreachable here by construction (qbitUrl above), so both routes take
+  // their raw-written error path - 409 for play, 404 for poster. That is what makes this
+  // test network-free while still going through the raw-response boundary.
+  const playPath = (): string => `/${token}/play/h/${'b'.repeat(40)}/1/1`;
+
+  test('a HEAD probe on /play leaves the connection usable for the ranged GET that follows', async () => {
+    const seen = await twoOnOneConnection(port, rawRequest('HEAD', playPath()), rawRequest('GET', playPath(), 'Range: bytes=0-1023\r\n'));
+    expect(seen).toEqual(['HTTP/1.1 409', 'HTTP/1.1 409']);
+  });
+
+  // Tells "the HEAD killed the connection" apart from "this server never reuses one".
+  test('control: two GETs on one connection are both answered', async () => {
+    const seen = await twoOnOneConnection(port, rawRequest('GET', playPath()), rawRequest('GET', playPath(), 'Range: bytes=0-1023\r\n'));
+    expect(seen).toEqual(['HTTP/1.1 409', 'HTTP/1.1 409']);
+  });
+
+  // The poster route writes the node response directly too, and Stremio fetches posters
+  // over the same connections as everything else.
+  test('a HEAD probe on /poster leaves the connection usable for the GET that follows', async () => {
+    const path = `/${token}/poster/${'b'.repeat(40)}`;
+    const seen = await twoOnOneConnection(port, rawRequest('HEAD', path), rawRequest('GET', path));
+    expect(seen).toEqual(['HTTP/1.1 404', 'HTTP/1.1 404']);
   });
 
   test('the right token reaches the manifest route', async () => {

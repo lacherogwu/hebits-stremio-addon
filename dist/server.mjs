@@ -10681,7 +10681,8 @@ function loadConfig() {
 			}
 		}
 	}
-	let token = saved.token;
+	if (saved.token !== void 0 && typeof saved.token !== "string") logIssue(`"token" is a ${typeOf(saved.token)}, not a string - a fresh token was generated, so every client's URL changed`, configIssues);
+	let token = typeof saved.token === "string" ? saved.token : void 0;
 	let tokenWasGenerated = false;
 	if (!token) {
 		token = randomBytes(16).toString("hex");
@@ -12667,6 +12668,9 @@ var Store = class {
 		if (existsSync(this.file)) try {
 			const parsed = JSON.parse(readFileSync(this.file, "utf8"));
 			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error(`it holds a JSON ${jsonKind(parsed)}, not an object`);
+			const { grabs, torrents } = parsed;
+			if (!Array.isArray(grabs)) throw new Error(grabs === void 0 ? "it has no \"grabs\" array" : `its "grabs" is a JSON ${jsonKind(grabs)}, not an array`);
+			if (typeof torrents !== "object" || torrents === null || Array.isArray(torrents)) throw new Error(torrents === void 0 ? "it has no \"torrents\" object" : `its "torrents" is a JSON ${jsonKind(torrents)}, not an object`);
 			this.data = parsed;
 		} catch (e) {
 			const badPath = `${this.file}.bad-${Date.now()}`;
@@ -12977,7 +12981,10 @@ app.all("*", async (c) => {
 					configIssues: cfg.configIssues,
 					storeIssue: store.loadIssue
 				},
-				freeGB: Math.round((await qbit.freeSpace() || 0) / GB)
+				freeGB: await qbit.freeSpace().then((bytes) => Math.round((bytes || 0) / GB)).catch((e) => {
+					log(`qbit free space: ${e.message}`);
+					return null;
+				})
 			});
 		}
 		return json(c, 404, { error: "not found" });
@@ -13010,8 +13017,13 @@ const runRestoreFocus = () => {
 };
 runRestoreFocus();
 setInterval(runRestoreFocus, 3e4);
+const [ALREADY_SENT_HEADER = "x-hono-already-sent"] = [...RESPONSE_ALREADY_SENT.headers.keys()];
+const fetchWithRawHead = async (request, env, ctx) => {
+	const res = await app.fetch(request, env, ctx);
+	return res.headers.get(ALREADY_SENT_HEADER) ? RESPONSE_ALREADY_SENT : res;
+};
 serve({
-	fetch: app.fetch,
+	fetch: fetchWithRawHead,
 	hostname: "0.0.0.0",
 	port: cfg.port
 }, () => log(`hebits addon v${VERSION} listening on :${cfg.port}`)).on("error", (err) => {

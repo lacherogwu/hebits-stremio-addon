@@ -297,7 +297,17 @@ app.all('*', async (c) => {
         // daily() falls back to that count exactly when Hebits' own counter is
         // unreachable - see store.ts's loadIssue. null when state.json loaded cleanly.
         health: { ...health, logFile: LOG_FILE, configIssues: cfg.configIssues, storeIssue: store.loadIssue },
-        freeGB: Math.round(((await qbit.freeSpace()) || 0) / GB),
+        // null, not 0: freeSpace() throws when qBittorrent is unreachable, and /status is
+        // the page you open precisely then - a 500 here (what server.js did) takes out the
+        // one diagnostic surface at the moment it is needed. 0 would be a lie in the other
+        // direction (a full disk), so an unknown free space says so.
+        freeGB: await qbit
+          .freeSpace()
+          .then((bytes) => Math.round((bytes || 0) / GB))
+          .catch((e: Error) => {
+            log(`qbit free space: ${e.message}`);
+            return null;
+          }),
       });
     }
 
@@ -343,7 +353,31 @@ const runRestoreFocus = (): void => {
 runRestoreFocus();
 setInterval(runRestoreFocus, 30_000);
 
-const server = serve({ fetch: app.fetch, hostname: '0.0.0.0', port: cfg.port }, () =>
+// The header @hono/node-server marks RESPONSE_ALREADY_SENT with, taken off the sentinel
+// itself rather than spelled out, so a rename inside the package cannot quietly turn the
+// guard below into a no-op.
+const [ALREADY_SENT_HEADER = 'x-hono-already-sent'] = [...RESPONSE_ALREADY_SENT.headers.keys()];
+
+// Hono answers a HEAD by re-dispatching the request as a GET and wrapping the result:
+// `new Response(null, res)` (hono-base's #dispatch). The wrapper copies our headers, so
+// the already-sent marker survives, but the object it produces is @hono/node-server's own
+// optimised Response - `serve()` has replaced globalThis.Response by then - and a null
+// body puts that on the responseViaCache fast path, which is checked BEFORE the marker.
+// So node-server calls writeHead on a response the poster/play handlers have already
+// written and ended; the ERR_HTTP_HEADERS_SENT it throws is handled by destroying the
+// socket, and the player's NEXT request on that keep-alive connection - the ranged GET
+// after the HEAD probe play.ts documents - gets no response at all.
+//
+// Handing back the sentinel the package built at import time (a plain global Response,
+// with no cache key) puts node-server back on the branch that writes nothing, which is
+// what a raw-written response needs. It must be that object: a freshly constructed
+// `new Response(null, …)` here would be the optimised class again and reintroduce the bug.
+const fetchWithRawHead: typeof app.fetch = async (request, env, ctx) => {
+  const res = await app.fetch(request, env, ctx);
+  return res.headers.get(ALREADY_SENT_HEADER) ? RESPONSE_ALREADY_SENT : res;
+};
+
+const server = serve({ fetch: fetchWithRawHead, hostname: '0.0.0.0', port: cfg.port }, () =>
   log(`hebits addon v${VERSION} listening on :${cfg.port}`),
 );
 
