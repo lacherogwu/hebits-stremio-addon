@@ -3,6 +3,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+// Type-only: the notifier's own view of its options is the single source of truth for
+// what config.json's "notify" object supports. `import type` keeps this erased, so
+// config.ts gains no runtime dependency on notify.ts.
+import type { NotifyConfig } from './notify';
 
 const HOME = homedir();
 export const CONFIG_DIR = process.env.HEBITS_ADDON_DIR || join(HOME, '.config', 'hebits-stremio-addon');
@@ -23,8 +27,14 @@ export interface Config {
   qbitPassword: string;
   watchCategory: string;
   watchPath: string;
-  // Home Assistant webhook, e.g. http://homeassistant.local:8123/api/webhook/<id>
-  notify: { webhookUrl: string };
+  // Alert transport. `webhookUrl` is the common case (a POST to Home Assistant, ntfy,
+  // Discord, ...), but notify.ts also reads `method`, `headers` and `body` to shape that
+  // request, and `command` to run a local argv instead - so the type is NotifyConfig
+  // rather than just the URL. It was narrowed to { webhookUrl } before, which compiled
+  // only because the narrow type is assignable to the notifier's wider one; the other
+  // keys always worked at runtime (validateOptions spreads the received object), so this
+  // widening documents existing behaviour and changes none of it.
+  notify: NotifyConfig & { webhookUrl: string };
   torrentDir: string;
   logFile: string;
   // Where the Hebits login cookie lives. Defaults inside CONFIG_DIR so the repo is
@@ -62,6 +72,11 @@ const DEFAULTS: Omit<Config, 'token' | 'configIssues'> = {
 // and is logged and recorded in configIssues; every other field - including keys this
 // version of the code doesn't know about - is honoured untouched.
 
+// Deliberately narrower than Config['notify']. validateOptions() below only *checks* the
+// keys listed here; every other key on the received object survives untouched, which is
+// how `method`, `headers`, `body` and `command` reach the notifier. Listing them here too
+// would be a behaviour change (a wrong-typed `headers` would start falling back to the
+// default instead of being passed through), so the shape stays as it is.
 const notifyShape: Record<string, z.ZodType> = {
   webhookUrl: z.string(),
 };
@@ -171,7 +186,10 @@ function validateScalar(key: string, schema: z.ZodType, fallback: unknown, recei
 function validateOptions(
   name: string,
   shape: Record<string, z.ZodType>,
-  fallback: Record<string, unknown>,
+  // Any options object; only ever read as fallback[key] to name the default in a message.
+  // Not Record<string, unknown>, so a caller can pass a precisely-typed default (such as
+  // DEFAULTS.notify, whose NotifyConfig type has no index signature) without a cast.
+  fallback: object,
   received: unknown,
   issues: string[],
 ): Record<string, unknown> {
@@ -180,11 +198,12 @@ function validateOptions(
     return {};
   }
   const out: Record<string, unknown> = { ...(received as Record<string, unknown>) };
+  const defaults = fallback as Record<string, unknown>;
   for (const [key, schema] of Object.entries(shape)) {
     if (!(key in out)) continue;
     const result = schema.safeParse(out[key]);
     if (!result.success) {
-      logIssue(`"${name}.${key}" is a ${typeOf(out[key])}, not the expected type - using default ${JSON.stringify(fallback[key])}`, issues);
+      logIssue(`"${name}.${key}" is a ${typeOf(out[key])}, not the expected type - using default ${JSON.stringify(defaults[key])}`, issues);
       delete out[key];
     }
   }
@@ -317,7 +336,7 @@ export function loadConfig(): Config {
   if ('notify' in saved)
     validated.notify = {
       ...DEFAULTS.notify,
-      ...validateOptions('notify', notifyShape, DEFAULTS.notify as Record<string, unknown>, saved.notify, configIssues),
+      ...validateOptions('notify', notifyShape, DEFAULTS.notify, saved.notify, configIssues),
     };
 
   const cfg: Config = { ...DEFAULTS, ...validated, token, configIssues } as Config;
