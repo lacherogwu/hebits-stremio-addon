@@ -4,7 +4,7 @@
   "qbitUsername": "",
   "qbitPassword": "",
   "watchCategory": "watch",
-  "watchPath": "/absolute/path/qbittorrent/downloads/to",
+  "watchPath": "/absolute/path/to/qbittorrent/downloads",
   "timezone": "Asia/Jerusalem",
   "dailyLimit": 10,
   "dailyLimitByDay": {},

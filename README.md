@@ -213,9 +213,10 @@ nothing to set up. It is then preserved across restarts, and across a corrupted 
 wherever it can be identified unambiguously, because rotating it breaks every URL already
 installed on a TV.
 
-`cookiePath` may point at a file shared with another service that logs in as the same Hebits
-account, so one paste serves both. It defaults inside the config directory, so the addon is
-self-contained unless you choose otherwise.
+`cookiePath` defaults inside the config directory, so the addon is self-contained. Point it at
+a file another service also reads — anything logging in as the same Hebits account — and one
+paste serves both. The parent directory is created on write, so a shared location outside
+either service's config directory works.
 
 ### When config.json is broken
 
