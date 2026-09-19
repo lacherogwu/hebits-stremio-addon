@@ -4,7 +4,7 @@
 // through the bundler at all, so it could not have caught that. This test rebuilds first
 // and never runs against a stale dist/.
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -106,8 +106,19 @@ describe('the built bundle (dist/server.mjs)', () => {
       }),
     );
 
-    child = spawn('node', [join(REPO_ROOT, 'dist', 'server.mjs')], {
-      cwd: REPO_ROOT,
+    // Run the bundle from tmpDir, NOT from the repo, and copy it there as a lone file.
+    // This is the deployment condition: the target holds exactly one file, with no
+    // package.json and no node_modules anywhere above it. Spawning out of REPO_ROOT would
+    // let anything the bundle failed to inline resolve against the repo and pass here
+    // while dying on the target - src/version.ts imports ../package.json, which resolves
+    // to the real one from dist/, so a build that stopped inlining it would go unnoticed
+    // exactly where it matters. Node resolves a bare specifier from the FILE's location,
+    // so the copy is what makes this test the real thing rather than a proxy for it.
+    const deployedBundle = join(tmpDir, 'server.mjs');
+    copyFileSync(join(REPO_ROOT, 'dist', 'server.mjs'), deployedBundle);
+
+    child = spawn('node', [deployedBundle], {
+      cwd: tmpDir,
       env: { ...process.env, HEBITS_ADDON_DIR: tmpDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -191,11 +202,12 @@ describe('the built bundle (dist/server.mjs)', () => {
   });
 
   // src/version.ts derives VERSION from package.json, which tsdown inlines at build time.
-  // The target machine has no package.json - only this one file - so a bundler that
-  // stopped inlining (leaving a runtime read of a file that isn't there) would break the
-  // deploy, not the unit tests. This asserts the property deploy.sh actually depends on:
-  // the SHIPPED artifact reports package.json's version, since deploy.sh compares the two
-  // by exact string match and otherwise fails after a 20-second wait on a healthy service.
+  // Because the bundle above runs as a lone file outside the repo, a build that stopped
+  // inlining would not merely report a wrong version here - it would fail to start at all
+  // (ERR_MODULE_NOT_FOUND on a package.json that isn't there), which is precisely what the
+  // target would do under KeepAlive. This asserts what deploy.sh depends on: the SHIPPED
+  // artifact reports package.json's version, compared by exact string match, otherwise
+  // every deploy fails after a 20-second wait against a healthy service.
   test('the built bundle reports package.json version through the manifest', async () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as { version: string };
     const res = await rawGet(port, `/${token}/manifest.json`);

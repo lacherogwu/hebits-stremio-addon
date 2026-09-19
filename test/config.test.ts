@@ -138,11 +138,22 @@ test('a wrong-typed notify.command is dropped and recorded, never reaching the n
   // "using default undefined" - the notifier's own fallback takes over instead.
   expect(cfg.configIssues[0]).toContain('ignoring it');
   expect(cfg.configIssues[0]).not.toContain('undefined');
+});
 
-  // The proof that matters: what loadConfig produced cannot break the notifier. A string
-  // command would have made this true and then thrown on send().
+// The discriminating case for the bug above: make the bad `command` the ONLY channel. With
+// a webhookUrl also set, `enabled` is true either way, so it cannot fail on the bug. Here
+// the old loader passed the string through, `cfg.command?.length` made `enabled` true, and
+// send() then threw into its own catch - a notifier that reported itself working and
+// silently delivered nothing. Dropping the key makes `enabled` false, which is the honest
+// answer: there is no usable channel configured.
+test('a notifier built from a config whose only channel is a bad command reports itself disabled', async () => {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ notify: { command: 'notify-send hi' } }));
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
   const { Notifier } = await import('../src/notify');
-  expect(new Notifier(cfg.notify).enabled).toBe(true);
+
+  expect(new Notifier(cfg.notify).enabled).toBe(false);
+  expect(cfg.configIssues).toHaveLength(1);
 });
 
 test('each remaining notify key is type-checked, and a good one of the same name survives', async () => {

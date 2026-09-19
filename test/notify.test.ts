@@ -128,6 +128,29 @@ test('a custom method, headers and body are honoured', async () => {
   expect(headers['content-type']).toBe('text/plain');
 });
 
+// `"X-Priority": 5` is ordinary ntfy/Gotify usage and reached fetch before notify's keys
+// were validated. The loader accepts a number for this reason, so post() has to hand fetch
+// a string - a number here would be a header value fetch cannot use.
+test('a numeric header value is sent as a string', async () => {
+  const sent: { url: string; init: RequestInit }[] = [];
+  const n = new Notifier(
+    { webhookUrl: 'http://ntfy/topic', headers: { 'X-Priority': 5 } },
+    {},
+    () => {},
+    () => {},
+    {
+      fetch: async (url, init) => {
+        sent.push({ url: String(url), init: init ?? {} });
+        return { ok: true, status: 200 } as Response;
+      },
+    },
+  );
+  await n.send('k', 'T', 'M');
+  const headers = sent[0]?.init.headers as Record<string, string>;
+  expect(headers['X-Priority']).toBe('5');
+  expect(headers['content-type']).toBe('application/json'); // default still applied
+});
+
 test('a command is run with rendered arguments', async () => {
   const calls: { cmd: string; args: string[] }[] = [];
   const n = new Notifier(

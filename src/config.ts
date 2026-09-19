@@ -86,7 +86,9 @@ const DEFAULTS: Omit<Config, 'token' | 'configIssues'> = {
 const notifyShape: Record<string, z.ZodType> = {
   webhookUrl: z.string(),
   method: z.string(),
-  headers: z.record(z.string(), z.string()),
+  // string | number: see NotifyConfig.headers - a numeric value is valid usage and is
+  // stringified at the point of use, so rejecting it here would break working configs.
+  headers: z.record(z.string(), z.union([z.string(), z.number()])),
   body: z.string(),
   command: z.array(z.string()),
 };

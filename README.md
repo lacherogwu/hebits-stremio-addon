@@ -71,7 +71,7 @@ emoji included:
   path literally, so a Node installed anywhere else (Homebrew's `/opt/homebrew/bin/node`,
   for instance) will not be found. Either install Node there or edit the path in
   `deploy/org.user.hebits-addon.plist` before installing it — see
-  [When the deploy times out](#when-the-deploy-times-out) for what the failure looks like,
+  [When the deploy fails](#when-the-deploy-fails) for what the failure looks like,
   because it does not name this as the cause.
 - [qBittorrent](https://www.qbittorrent.org/) with the WebUI enabled.
 - For `npm run deploy` to reach it: an SSH server, and `rsync`, `curl` and `bash` on the
@@ -126,6 +126,10 @@ http://<host>:7000/<token>/manifest.json
 
 where `<host>` is this machine's address on your network and `<token>` is the value written
 to `config.json`.
+
+Then paste a Hebits cookie at `http://<host>:7000/<token>/cookie` — until you do, the addon
+runs but every search comes back empty. See
+[The Hebits login cookie](#the-hebits-login-cookie).
 
 ## Deploying
 
@@ -207,19 +211,37 @@ ssh <ssh-host> '~/Applications/node/bin/node -p "require(process.env.HOME+\"/.co
 The addon is then at `http://<target-host>:7000/<token>/manifest.json`, which is the URL to
 install in Stremio or Nuvio.
 
-### When the deploy times out
+### Last step: install a cookie
 
-`scripts/deploy.sh` ends with `✗ addon did not come up as v<version>` after about twenty
-seconds, and prints the last 20 log lines. It does not diagnose the cause, so the usual
-candidates, in the order worth checking:
+A freshly deployed addon has no Hebits cookie, so searches return nothing and the catalogs
+look empty — it is working, but blind. Open
 
-- **Node is not at `~/Applications/node/bin/node`.** The most common one on a fresh target,
-  and the least obvious: launchd cannot start a program that isn't there, so the log stays
-  empty and nothing explains why. See [Requirements](#requirements).
-- **The service started but reports a different version.** The deploy matches on the version
-  string *and* on the PID it just started, so this is a real mismatch, not a stale read.
-- **The addon exited on startup** — most likely the port is taken (see
-  [Install](#install)) or qBittorrent is unreachable. The printed log lines will say.
+```
+http://<target-host>:7000/<token>/cookie
+```
+
+and paste a cookie, following the instructions on the page. It takes effect immediately.
+See [The Hebits login cookie](#the-hebits-login-cookie) for what the page does with it.
+
+### When the deploy fails
+
+`scripts/deploy.sh` reports a failure in one of two shapes:
+
+- `✗ launchctl kickstart failed on this host`, after which it prints the one-time
+  LaunchAgent setup above.
+- `✗ addon did not come up as v<version>`, after about twenty seconds, followed by the last
+  20 lines of the log.
+
+Neither message diagnoses the cause. Worth checking, in this order:
+
+- **Node is not at `~/Applications/node/bin/node`** — the most common problem on a fresh
+  target, and the least obvious, because launchd cannot start a program that isn't there
+  and so the log stays empty. Which of the two messages above this produces has not been
+  tested; check the path whichever one you get. See [Requirements](#requirements).
+- **The addon exited on startup** — most likely the port is taken (see [Install](#install))
+  or qBittorrent is unreachable. The printed log lines will say.
+- **A genuine version mismatch.** The deploy matches on the version string *and* on the PID
+  it just started, so this is never a stale read of an older process.
 
 ## Configuration
 

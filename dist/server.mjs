@@ -10578,7 +10578,7 @@ const DEFAULTS = {
 const notifyShape = {
 	webhookUrl: string(),
 	method: string(),
-	headers: record(string(), string()),
+	headers: record(string(), union([string(), number()])),
 	body: string(),
 	command: array(string())
 };
@@ -12482,11 +12482,12 @@ var Notifier = class {
 	async post(vars) {
 		const { webhookUrl, method = "POST", headers = {}, body = DEFAULT_BODY } = this.cfg;
 		if (!webhookUrl) throw new Error("post: no webhookUrl configured");
+		const stringHeaders = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, String(v)]));
 		const res = await this.fetch(webhookUrl, {
 			method,
 			headers: {
 				"content-type": "application/json",
-				...headers
+				...stringHeaders
 			},
 			body: renderTemplate(body, vars),
 			signal: AbortSignal.timeout(1e4)

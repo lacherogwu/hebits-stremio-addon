@@ -92,3 +92,31 @@ test('the recovery alert is forced, bypassing any throttle', () => {
   const recovery = notifier.sent.find((s) => s.kind === 'login-ok');
   expect(recovery?.opts?.force).toBe(true);
 });
+
+// The alert body is the owner's only signal that the addon has gone blind, and it has been
+// rewritten twice. Pin what must hold: it fires on the transition, it names a recovery that
+// exists (/cookie - the page that installs the cookie; there is no other way to install
+// one), it carries the underlying error, and it never embeds a credential. It must also not
+// assert the cookie expired: noteLogin(false) is called for ANY search failure, so the text
+// says searches are failing and offers /cookie as the likely fix.
+test('the login alert names /cookie, carries the error, and leaks no credential', () => {
+  const notifier = fakeNotifier();
+  const { noteLogin } = createHealthTracker(notifier, () => {});
+
+  noteLogin(true); // reach 'ok' silently so the next call is a real transition
+  noteLogin(false, 'Hebits search: HTTP 502');
+
+  expect(notifier.sent).toHaveLength(1);
+  const alert = notifier.sent[0];
+  expect(alert?.kind).toBe('login'); // persisted throttle key - renaming it resets the throttle
+  expect(alert?.message).toContain('/cookie');
+  expect(alert?.message).toContain('HTTP 502');
+
+  // Nothing cookie-shaped may appear. health.ts never receives the cookie, and this is what
+  // stops a later "include the cookie so we can debug it" from shipping.
+  const text = `${alert?.title} ${alert?.message}`;
+  expect(text).not.toMatch(/PHPSESSID|session=/i);
+
+  // It must not claim the login expired - it only knows the search failed.
+  expect(alert?.title).toBe('Hebits searches are failing');
+});

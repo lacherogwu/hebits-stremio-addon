@@ -31,7 +31,9 @@ export function renderTemplate(tpl: string, vars: TemplateVars): string {
 export interface NotifyConfig {
   webhookUrl?: string;
   method?: string;
-  headers?: Record<string, string>;
+  // Values may be numbers: `"X-Priority": 5` is ordinary ntfy/Gotify usage, and a config
+  // that worked before must keep working. Coerced to strings in post().
+  headers?: Record<string, string | number>;
   body?: string;
   command?: string[];
 }
@@ -101,9 +103,13 @@ export class Notifier {
   async post(vars: TemplateVars): Promise<void> {
     const { webhookUrl, method = 'POST', headers = {}, body = DEFAULT_BODY } = this.cfg;
     if (!webhookUrl) throw new Error('post: no webhookUrl configured');
+    // String() every value rather than requiring strings in config.json: a numeric header
+    // reached fetch and was coerced before this object was validated, so rejecting one now
+    // would silently change an operator's alert shape on upgrade.
+    const stringHeaders = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, String(v)]));
     const res = await this.fetch(webhookUrl, {
       method,
-      headers: { 'content-type': 'application/json', ...headers },
+      headers: { 'content-type': 'application/json', ...stringHeaders },
       body: renderTemplate(body, vars),
       signal: AbortSignal.timeout(10_000),
     });
