@@ -34,5 +34,20 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      // These two files build raw bencode fixtures by concatenating one wire token per
+      // term: 'd' opens a dict, 'l' a list, each 'e' closes one of them, and enc(x) emits
+      // a length-prefixed string. The token boundaries ARE the structure under test (pad
+      // files, nesting depth, the exact byte range the infohash is taken over), so the
+      // concatenation is deliberate and stays. useTemplate's fix - which Biome itself
+      // marks unsafe - would collapse `enc('private') + 'i2e' + 'e'` into `...i2ee`,
+      // merging a value with the dict terminator that closes the container holding it and
+      // leaving the nesting invisible. Off here only; template literals remain the norm
+      // everywhere else.
+      "includes": ["test/bencode.test.ts", "test/torrentmeta.test.ts"],
+      "linter": { "rules": { "style": { "useTemplate": "off" } } }
+    }
+  ]
 }
