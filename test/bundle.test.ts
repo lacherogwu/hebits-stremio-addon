@@ -144,7 +144,7 @@ describe('the built bundle (dist/server.mjs)', () => {
       JSON.stringify({
         port,
         // This test must never reach a real service, by construction rather than by which
-        // routes it happens to exercise. The machine this addon deploys to runs a live
+        // routes it happens to exercise. The machine this addon runs on has a live
         // qBittorrent on the qbitUrl default (127.0.0.1:8080); point at a port nothing
         // listens on instead of inheriting that default. Same reasoning for notify's
         // webhook (already '' by default, spelled out here so it doesn't depend on that
@@ -157,10 +157,10 @@ describe('the built bundle (dist/server.mjs)', () => {
     );
 
     // Run the bundle from tmpDir, NOT from the repo, and copy it there as a lone file.
-    // This is the deployment condition: the target holds exactly one file, with no
-    // package.json and no node_modules anywhere above it. Spawning out of REPO_ROOT would
+    // This is the shipping condition: where it runs, the addon is exactly one file, with
+    // no package.json and no node_modules anywhere above it. Spawning out of REPO_ROOT would
     // let anything the bundle failed to inline resolve against the repo and pass here
-    // while dying on the target - src/version.ts imports ../package.json, which resolves
+    // while dying where it actually runs - src/version.ts imports ../package.json, resolving
     // to the real one from dist/, so a build that stopped inlining it would go unnoticed
     // exactly where it matters. Node resolves a bare specifier from the FILE's location,
     // so the copy is what makes this test the real thing rather than a proxy for it.
@@ -289,10 +289,10 @@ describe('the built bundle (dist/server.mjs)', () => {
   // src/version.ts derives VERSION from package.json, which tsdown inlines at build time.
   // Because the bundle above runs as a lone file outside the repo, a build that stopped
   // inlining would not merely report a wrong version here - it would fail to start at all
-  // (ERR_MODULE_NOT_FOUND on a package.json that isn't there), which is precisely what the
-  // target would do under KeepAlive. This asserts what deploy.sh depends on: the SHIPPED
-  // artifact reports package.json's version, compared by exact string match, otherwise
-  // every deploy fails after a 20-second wait against a healthy service.
+  // (ERR_MODULE_NOT_FOUND on a package.json that isn't there), restarting forever under a
+  // restart-on-exit supervisor. This asserts what any upgrade check depends on: the SHIPPED
+  // artifact reports package.json's version, compared by exact string match, otherwise that
+  // check fails against a healthy service.
   test('the built bundle reports package.json version through the manifest', async () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as { version: string };
     const res = await rawGet(port, `/${token}/manifest.json`);

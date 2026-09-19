@@ -15,8 +15,9 @@ test('VERSION is package.json version', () => {
 
 // The pin the old test had (`toBe('2.0.0')`) proved only that a hand-maintained duplicate
 // still equalled itself. What actually has to hold is that the string is usable as a
-// version at all: scripts/deploy.sh compares it to package.json's by exact string match,
-// so an empty or undefined value would make every deploy fail after a 20-second wait.
+// version at all: an upgrade is confirmed by comparing the version the manifest reports to
+// package.json's by exact string match, so an empty or undefined value breaks that check
+// against a service that is running perfectly well.
 test('VERSION is a non-empty version string', () => {
   expect(typeof VERSION).toBe('string');
   expect(VERSION).toMatch(/^\d+\.\d+\.\d+/);

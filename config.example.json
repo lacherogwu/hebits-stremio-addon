@@ -4,11 +4,11 @@
   "qbitUsername": "",
   "qbitPassword": "",
   "watchCategory": "watch",
-  "watchPath": "/Users/<you>/hebits/watch",
+  "watchPath": "/absolute/path/qbittorrent/downloads/to",
   "timezone": "Asia/Jerusalem",
   "dailyLimit": 10,
   "dailyLimitByDay": {},
   "minFreeGB": 20,
   "notify": { "webhookUrl": "" },
-  "cookiePath": "/Users/<you>/.config/hebits-account-builder/cookie.txt"
+  "cookiePath": "/absolute/path/to/cookie.txt"
 }

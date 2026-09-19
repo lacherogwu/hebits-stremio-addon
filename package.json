@@ -12,7 +12,6 @@
     "typecheck": "tsc",
     "test": "vitest run",
     "start": "node dist/server.mjs",
-    "deploy": "scripts/deploy.sh",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "check": "biome check ."

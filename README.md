@@ -75,36 +75,22 @@ emoji included:
 
 ## Requirements
 
-**On the target** — the machine that runs the addon:
+**To build:** Node.js ≥ 22 and npm.
 
-- **Node.js ≥ 22, installed at `~/Applications/node/bin/node`.** The LaunchAgent names that
-  path literally, so a Node installed anywhere else (Homebrew's `/opt/homebrew/bin/node`,
-  for instance) will not be found. Either install Node there or edit the path in
-  `deploy/org.user.hebits-addon.plist` before installing it — see
-  [When the deploy fails](#when-the-deploy-fails) for what the failure looks like,
-  because it does not name this as the cause.
-- [qBittorrent](https://www.qbittorrent.org/) with the WebUI enabled.
-- For `npm run deploy` to reach it: an SSH server, and `rsync`, `curl` and `bash` on the
-  target.
-- A **bootstrapped `gui/$(id -u)` launchd domain**. This is the GUI session's domain, so it
-  does not exist on a Mac that has never had a console login (a headless server that has
-  only ever been reached over SSH). `launchctl bootstrap` fails there, and the fix is to log
-  in on the console once.
-
-Nothing else: no indexer, no proxy, no `node_modules`, and no npm on the target.
-
-**On the developer machine:** Node.js ≥ 22 and npm.
+**To run:** Node.js ≥ 22, and [qBittorrent](https://www.qbittorrent.org/) with the WebUI
+enabled. Nothing else: no indexer, no proxy, no `node_modules`, and no npm on the machine
+that runs it.
 
 ## Install
 
-The addon ships as **one bundled file**, `dist/server.mjs`. The two machines have different
-requirements, and it's worth being precise about which is which:
+The addon ships as **one bundled file**, `dist/server.mjs`. Building and running can happen
+on one machine or two, and the split is worth being precise about:
 
-- **Developer machine** — needs `npm install`, and a build step to produce the bundle.
-- **Target machine** — needs only `dist/server.mjs` and a Node runtime. There is no
-  `node_modules`, no `package.json` and no npm on the target; the four runtime dependencies
-  are compiled into the single file. That is the point of the deployment design: nothing to
-  install, nothing to keep in sync, and an upgrade is one file copy.
+- **Where you build** — needs `npm install`, and a build step to produce the bundle.
+- **Where it runs** — needs only `dist/server.mjs` and a Node runtime. No `node_modules`,
+  no `package.json` and no npm: the four runtime dependencies are compiled into the single
+  file. That is the point of the design — nothing to install, nothing to keep in sync, and an
+  upgrade is one file copy.
 
 Build it:
 
@@ -141,126 +127,70 @@ Then paste a Hebits cookie at `http://<host>:7000/<token>/cookie` — until you 
 runs but every search comes back empty. See
 [The Hebits login cookie](#the-hebits-login-cookie).
 
-## Deploying
+## Running it as a service
+
+Copy `dist/server.mjs` wherever you keep it and start it under whatever supervisor you
+already use — launchd, systemd, pm2, a container. This repo ships no deployment tooling and
+has no opinion about any of it: the host, the install path and the service manager are facts
+about your machine, not about this addon.
+
+Three things a supervisor has to get right:
+
+- **Send stdout and stderr to `logFile`.** The addon logs with `console.log`, so whatever the
+  supervisor does with stdout *is* the log. It rotates by truncating `logFile` **in place**
+  once it passes 20 MB — the only method that works when the supervisor holds that
+  descriptor open for the life of the process. Point the supervisor somewhere other than
+  `logFile` and rotation silently stops applying to the file actually being written, which
+  then grows without bound.
+- **Set `HEBITS_ADDON_DIR` in the supervisor's own environment**, if you set it at all. A
+  supervised service does not inherit your shell, so exporting it from a shell profile has no
+  effect on the running addon. It also moves the default `logFile`, so it runs into the point
+  above as well.
+- **Restart-on-exit is safe, and worth turning on.** Nothing on the startup path is allowed
+  to throw: a `config.json` that will not parse, or that parses to the wrong shape, is moved
+  aside and the addon starts on defaults (see
+  [When config.json is broken](#when-configjson-is-broken)). A restart policy therefore
+  cannot turn one typo into a restart loop that never alerts anybody.
+
+After an upgrade, ask the running addon for its version rather than assuming the restart
+took — a supervisor that failed to restart leaves the old process answering happily:
 
 ```bash
-npm run deploy
+curl -s "http://127.0.0.1:7000/<token>/manifest.json" | grep -o '"version":"[^"]*"'
 ```
-
-`scripts/deploy.sh` runs the typecheck and the tests, builds the bundle, copies
-`dist/server.mjs` to the target over `rsync`, restarts the LaunchAgent with
-`launchctl kickstart`, and then waits until the running service answers its manifest as the
-version that was just built — matching on both the version string and the PID launchd
-started, so a same-version redeploy against a process that never actually restarted still
-fails rather than reporting success.
-
-The target is an SSH host name. Set it once in `.deploy-host` (git-ignored), or per-run in
-the environment:
-
-```bash
-echo my-ssh-host > .deploy-host     # once
-DEPLOY_HOST=my-ssh-host npm run deploy   # or per-run; overrides .deploy-host
-```
-
-### One-time LaunchAgent setup
-
-The first deploy to a fresh target will report that no LaunchAgent is installed and print
-these steps. `deploy/org.user.hebits-addon.plist` is a template containing `__HOME__`
-placeholders.
-
-1. Copy the template over, still unsubstituted:
-
-   ```bash
-   scp deploy/org.user.hebits-addon.plist "<ssh-host>:/tmp/org.user.hebits-addon.plist"
-   ```
-
-2. Substitute and load it **on the target**. The substitution must happen there, not
-   locally: the two machines' home directories can differ, and a plist built against the
-   wrong `$HOME` points every path at an account that doesn't exist, so the service never
-   spawns. The single quotes below keep `$HOME` and `$(id -u)` unexpanded until they reach
-   the target:
-
-   ```bash
-   ssh "<ssh-host>" 'mkdir -p ~/Library/LaunchAgents \
-     && sed "s|__HOME__|$HOME|g" /tmp/org.user.hebits-addon.plist \
-        > ~/Library/LaunchAgents/org.user.hebits-addon.plist \
-     && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.user.hebits-addon.plist'
-   ```
-
-Then re-run `npm run deploy`.
-
-The plist hard-codes three paths, all with `__HOME__` substituted at install time: Node at
-`~/Applications/node/bin/node`, the bundle at
-`~/Applications/hebits-stremio-addon/dist/server.mjs`, and launchd's stdout and stderr at
-`~/.config/hebits-stremio-addon/addon.log`. It sets `KeepAlive`, so the service restarts on
-its own if it exits — which is why nothing on the startup path is allowed to throw (see
-[When config.json is broken](#when-configjson-is-broken)).
-
-Two config keys are coupled to that plist, and changing either one alone breaks something
-quietly:
-
-- **`logFile`** must match the plist's `StandardOutPath`/`StandardErrorPath`. launchd holds
-  that file open for the life of the process, and the addon rotates the log by truncating
-  **that exact path in place** — the only method that works with a descriptor launchd owns.
-  Point `logFile` somewhere else and rotation silently stops applying to the file actually
-  being written, which then grows without bound. Change both or neither.
-- **`HEBITS_ADDON_DIR`** is read from the environment, and a launchd service does not
-  inherit your shell's. Setting it in a shell profile has no effect on the running addon;
-  it has to go in an `EnvironmentVariables` dict in the plist. Note that it also moves the
-  default `logFile`, so it runs into the point above as well.
 
 ### Reading the token
 
-Both the manifest URL and the `/cookie` page need the `token` that the addon generated on
-the target at first run. Read it back over SSH:
+Both the manifest URL and the `/cookie` page need the `token` the addon generated at first
+run. Read it back on the machine it runs on:
 
 ```bash
-ssh <ssh-host> '~/Applications/node/bin/node -p "require(process.env.HOME+\"/.config/hebits-stremio-addon/config.json\").token"'
+node -p "require(process.env.HOME + '/.config/hebits-stremio-addon/config.json').token"
 ```
 
-The addon is then at `http://<target-host>:7000/<token>/manifest.json`, which is the URL to
-install in Stremio or Nuvio.
+The addon is then at `http://<host>:7000/<token>/manifest.json`, which is the URL to install
+in Stremio or Nuvio.
 
 ### Last step: install a cookie
 
-A freshly deployed addon has no Hebits cookie, so searches return nothing and the catalogs
+A freshly installed addon has no Hebits cookie, so searches return nothing and the catalogs
 look empty — it is working, but blind. Open
 
 ```
-http://<target-host>:7000/<token>/cookie
+http://<host>:7000/<token>/cookie
 ```
 
 and paste a cookie, following the instructions on the page. It takes effect immediately.
 See [The Hebits login cookie](#the-hebits-login-cookie) for what the page does with it.
 
-### When the deploy fails
-
-`scripts/deploy.sh` reports a failure in one of two shapes:
-
-- `✗ launchctl kickstart failed on this host`, after which it prints the one-time
-  LaunchAgent setup above.
-- `✗ addon did not come up as v<version>`, after about twenty seconds, followed by the last
-  20 lines of the log.
-
-Neither message diagnoses the cause. Worth checking, in this order:
-
-- **Node is not at `~/Applications/node/bin/node`** — the most common problem on a fresh
-  target, and the least obvious, because launchd cannot start a program that isn't there
-  and so the log stays empty. Which of the two messages above this produces has not been
-  tested; check the path whichever one you get. See [Requirements](#requirements).
-- **The addon exited on startup** — most likely the port is taken (see [Install](#install))
-  or qBittorrent is unreachable. The printed log lines will say.
-- **A genuine version mismatch.** The deploy matches on the version string *and* on the PID
-  it just started, so this is never a stale read of an older process.
-
 ## Configuration
 
 Settings live in `~/.config/hebits-stremio-addon/config.json` (mode `600`), overriding the
-defaults in `src/config.ts`. See `deploy/config.example.json` for a starting point.
+defaults in `src/config.ts`. See `config.example.json` for a starting point.
 
-The directory itself is overridden with the `HEBITS_ADDON_DIR` environment variable — which
-for the deployed service means an `EnvironmentVariables` dict in the LaunchAgent plist, not
-a shell profile, since launchd does not pass your shell's environment to it.
+The directory itself is overridden with the `HEBITS_ADDON_DIR` environment variable, which a
+supervised service has to be handed explicitly — see
+[Running it as a service](#running-it-as-a-service).
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -277,17 +207,17 @@ a shell profile, since launchd does not pass your shell's environment to it.
 | `watchPath` | `~/hebits/watch` | Save path for `watchCategory` |
 | `notify` | `{"webhookUrl": ""}` | Alert transport; see [Notifications](#notifications) |
 | `torrentDir` | `<config dir>/torrents` | Where downloaded `.torrent` files are cached; created on startup if missing |
-| `logFile` | `<config dir>/addon.log` | Truncated in place (with a `.1` backup) once it passes 20 MB. **Must match the LaunchAgent plist** — see [One-time LaunchAgent setup](#one-time-launchagent-setup) |
+| `logFile` | `<config dir>/addon.log` | Truncated in place (with a `.1` backup) once it passes 20 MB. **Whatever supervises the addon must send stdout and stderr to this same path** — see [Running it as a service](#running-it-as-a-service) |
 
 `cookiePath` may point at a file shared with another service — `hebits-account-builder` uses
 the same cookie — but it defaults inside the config directory so the addon is self-contained.
 
 ### When config.json is broken
 
-`config.json` is hand-edited, and launchd restarts the service on exit, so a config error
-that threw at startup would become a silent restart loop: the process would die before the
-notifier exists, so no alert would ever fire. It would simply be down. Nothing on the load
-path is therefore allowed to throw.
+`config.json` is hand-edited, and a supervisor restarts the service on exit, so a config
+error that threw at startup would become a silent restart loop: the process would die before
+the notifier exists, so no alert would ever fire. It would simply be down. Nothing on the
+load path is therefore allowed to throw.
 
 - **One bad field** — a wrong type, e.g. `"minFreeGB": "20"` — falls back to its default.
   Every other field, *including keys this version of the code doesn't recognize*, is kept
@@ -429,7 +359,7 @@ measured result.
 | `src/cookie-page.ts` | The `/cookie` page |
 | `src/covers.ts` | Poster covers for torrents seen in search results |
 | `src/lock.ts` | A per-key async mutex |
-| `src/version.ts` | The version string the manifest and the deploy check compare against |
+| `src/version.ts` | The version string the manifest reports |
 
 Every file here has a matching `test/<name>.test.ts`, except `src/server.ts` — its routing
 and token guard are covered by `test/bundle.test.ts`, which spawns the built bundle and
@@ -443,7 +373,7 @@ Four at runtime — [`hebits-client`](https://www.npmjs.com/package/hebits-clien
 tracker), [`hono`](https://hono.dev/) and `@hono/node-server` (HTTP), and
 [`zod`](https://zod.dev/) (validating `config.json`) — plus TypeScript, Vitest, tsdown and
 Biome for development. `npm run build` bundles all four into `dist/server.mjs`, which is the
-only file deployed.
+only file you need in order to run it.
 
 ## Tests
 

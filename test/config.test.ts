@@ -335,8 +335,8 @@ test('a config.json that cannot even be moved aside runs from in-memory defaults
   expect(readdirSync(dir).find((f) => f.startsWith('config.json.bad-'))).toBeUndefined();
 });
 
-// deploy/config.example.json's own torrentDir has crashed the service into a launchd
-// restart loop before (an unguarded mkdirSync threw ENOENT for a path macOS can't create) -
+// config.example.json's own torrentDir has crashed the service into a supervisor restart
+// loop before (an unguarded mkdirSync threw ENOENT for a path macOS can't create) -
 // this pins that a bad custom torrentDir falls back to the default instead.
 test('an uncreatable torrentDir falls back to the default and is recorded in configIssues', async () => {
   const blocker = join(dir, 'blocker'); // a file, not a directory
@@ -352,9 +352,9 @@ test('an uncreatable torrentDir falls back to the default and is recorded in con
   expect(() => statSync(cfg?.torrentDir as string)).not.toThrow();
 });
 
-// loadConfig() runs at module load under a KeepAlive LaunchAgent, before the notifier
-// exists, so every one of the three tests below is pinning the same property: an uncaught
-// throw here is not a crash the owner hears about, it is a silent 10-second restart loop.
+// loadConfig() runs at module load, under a supervisor that restarts on exit and before the
+// notifier exists, so every one of the three tests below is pinning the same property: an
+// uncaught throw here is not a crash the owner hears about, it is a silent restart loop.
 // Each uses a real OS error rather than a mocked fs - EISDIR in particular is not a thing
 // a reasonable fs mock produces, and it is exactly what a directory left in config.json's
 // place gives.
