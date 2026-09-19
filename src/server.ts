@@ -69,10 +69,32 @@ type AppEnv = { Bindings: HttpBindings };
 
 function json(c: Context<AppEnv>, code: ContentfulStatusCode, body: unknown): Response {
   return c.json(body, code, {
+    // c.json()'s own default is a bare `application/json` (no charset); server.js always
+    // sent the charset, so it's spelled out here rather than left to Hono's default.
+    'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Private-Network': 'true',
     'Cache-Control': 'no-store',
   });
+}
+
+// A stray `%` in a route segment is a malformed request from whoever built the URL, not a
+// server error - decodeURIComponent throws URIError on it either way. The handlers below
+// take the RAW (still-encoded) id, exactly as server.js's `m[2]` did, so only this
+// function's boolean return is used by a caller, never the decoded string.
+//
+// The decoded length is folded into the return expression (rather than a bare
+// `decodeURIComponent(s);` statement whose result nothing consumes) because rolldown's
+// dead-code elimination cannot see that decodeURIComponent can throw: a call whose return
+// value is provably unused gets removed as "pure", taking the whole try/catch - and this
+// guard - out of the shipped bundle. See test/bundle.test.ts, which exercises dist/ for
+// exactly this class of bug.
+function isDecodable(s: string): boolean {
+  try {
+    return decodeURIComponent(s).length >= 0;
+  } catch {
+    return false;
+  }
 }
 
 // Private Network Access: lets an https web page fetch from this LAN address.
@@ -132,8 +154,11 @@ async function runCookiePage(c: Context<AppEnv>): Promise<Response> {
     health,
     log,
     // A fresh, disposable client bound to the candidate cookie - verifying a paste must
-    // never touch the cookie the running server (`hebits` above) is already using.
-    hebits: (cookie: string) => new Hebits({ cookie }),
+    // never touch the cookie the running server (`hebits` above) is already using. Still a
+    // provider (never a bound string), matching CookiePageDeps' own doc comment and
+    // hebits.ts's makeHebits() - consistency at this one boundary matters more than the
+    // string form being harmless for a single verify-and-discard call.
+    hebits: (cookie: string) => new Hebits({ cookie: () => cookie }),
     writeCookie: (cookie: string) => writeCookie(cfg.cookiePath, cookie),
     noteLogin,
   });
@@ -184,11 +209,7 @@ app.all('*', async (c) => {
       const [, type, rawId] = m;
       if (!isMediaType(type) || rawId === undefined) return json(c, 404, { error: 'not found' });
       // Same malformed-`%` guard as above: a bad id is a 404, not a 500.
-      try {
-        decodeURIComponent(rawId);
-      } catch {
-        return json(c, 404, { error: 'not found' });
-      }
+      if (!isDecodable(rawId)) return json(c, 404, { error: 'not found' });
       const find = parseFindId(rawId);
       const meta = find ? await addon.handleFindMeta(type, find, baseUrl) : await addon.handleMeta(rawId, baseUrl);
       return meta ? json(c, 200, { meta }) : json(c, 404, { error: 'not found' });
@@ -198,11 +219,7 @@ app.all('*', async (c) => {
     if (m) {
       const [, type, rawId] = m;
       if (!isMediaType(type) || rawId === undefined) return json(c, 404, { error: 'not found' });
-      try {
-        decodeURIComponent(rawId);
-      } catch {
-        return json(c, 404, { error: 'not found' });
-      }
+      if (!isDecodable(rawId)) return json(c, 404, { error: 'not found' });
       const findRef = parseFindId(rawId);
       if (findRef) return json(c, 200, { streams: await addon.handleFindStream(type, findRef, baseUrl) });
       if (parseHebitsId(rawId)) return json(c, 200, { streams: await addon.handleLibraryStream(type, rawId, baseUrl) });
@@ -253,7 +270,13 @@ app.all('*', async (c) => {
       // Read separately from daily() - dailyDownloads() no longer carries stats - and
       // tolerated: /status must still render without an account section when the tracker
       // is unreachable, exactly as a missing d.stats degraded before.
-      const st = await hebits.stats().catch(() => undefined);
+      const st = await hebits.stats().catch((e: Error) => {
+        // e.message is a transport/API error (HTTP status, schema mismatch, etc.), never
+        // the cookie itself - see grab.ts's identical `hebits daily downloads: …` log for
+        // the same pattern against the same client.
+        log(`hebits stats: ${e.message}`);
+        return undefined;
+      });
       return json(c, 200, {
         version: VERSION,
         account: st && {
