@@ -189,4 +189,17 @@ describe('the built bundle (dist/server.mjs)', () => {
     const body = JSON.parse(res.body) as { id?: string };
     expect(body.id).toBe('net.hebits.home');
   });
+
+  // src/version.ts derives VERSION from package.json, which tsdown inlines at build time.
+  // The target machine has no package.json - only this one file - so a bundler that
+  // stopped inlining (leaving a runtime read of a file that isn't there) would break the
+  // deploy, not the unit tests. This asserts the property deploy.sh actually depends on:
+  // the SHIPPED artifact reports package.json's version, since deploy.sh compares the two
+  // by exact string match and otherwise fails after a 20-second wait on a healthy service.
+  test('the built bundle reports package.json version through the manifest', async () => {
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as { version: string };
+    const res = await rawGet(port, `/${token}/manifest.json`);
+    const body = JSON.parse(res.body) as { version?: string };
+    expect(body.version).toBe(pkg.version);
+  });
 });

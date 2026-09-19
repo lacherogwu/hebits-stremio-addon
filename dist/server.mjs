@@ -2531,7 +2531,7 @@ var Doc = class {
 };
 //#endregion
 //#region node_modules/zod/v4/core/versions.js
-const version = {
+const version$1 = {
 	major: 4,
 	minor: 6,
 	patch: 5
@@ -2543,7 +2543,7 @@ const $ZodType = /*@__PURE__*/ $constructor("$ZodType", (inst, def) => {
 	inst ?? (inst = {});
 	inst._zod.def = def;
 	inst._zod.bag = inst._zod.bag || {};
-	inst._zod.version = version;
+	inst._zod.version = version$1;
 	const defChecks = inst._zod.def.checks;
 	const checks = inst._zod.traits.has("$ZodCheck") ? [inst, ...defChecks ?? []] : defChecks?.length ? [...defChecks] : [];
 	for (const ch of checks) for (const fn of ch._zod.onattach) fn(inst);
@@ -10575,7 +10575,13 @@ const DEFAULTS = {
 	logFile: join(CONFIG_DIR, "addon.log"),
 	cookiePath: join(CONFIG_DIR, "cookie.txt")
 };
-const notifyShape = { webhookUrl: string() };
+const notifyShape = {
+	webhookUrl: string(),
+	method: string(),
+	headers: record(string(), string()),
+	body: string(),
+	command: array(string())
+};
 const fieldSchemas = {
 	port: number(),
 	dailyLimit: number(),
@@ -10633,7 +10639,8 @@ function validateOptions(name, shape, fallback, received, issues) {
 	for (const [key, schema] of Object.entries(shape)) {
 		if (!(key in out)) continue;
 		if (!schema.safeParse(out[key]).success) {
-			logIssue(`"${name}.${key}" is a ${typeOf(out[key])}, not the expected type - using default ${JSON.stringify(defaults[key])}`, issues);
+			const fix = key in defaults ? `using default ${JSON.stringify(defaults[key])}` : "ignoring it";
+			logIssue(`"${name}.${key}" is a ${typeOf(out[key])}, not the expected type - ${fix}`, issues);
 			delete out[key];
 		}
 	}
@@ -12339,11 +12346,11 @@ function createHealthTracker(notifier, log) {
 		});
 		if (was === health.hebitsLogin) return;
 		if (!ok) {
-			log(`hebits login problem: ${err}`);
-			notifier.send("login", "Hebits login stopped working", `Paste a fresh cookie at the addon's /cookie page. (${err})`);
+			log(`hebits search failing: ${err}`);
+			notifier.send("login", "Hebits searches are failing", `Usually an expired login - paste a fresh cookie at the addon's /cookie page. (${err})`);
 		} else if (was === "failing") {
 			notifier.reset("login");
-			notifier.send("login-ok", "Hebits login works again", "Searching resumed.", { force: true });
+			notifier.send("login-ok", "Hebits searches are working again", "Searching resumed.", { force: true });
 		}
 	}
 	return {

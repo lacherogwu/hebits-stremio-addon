@@ -115,6 +115,68 @@ test('a bad nested notify field falls back while the rest of notify survives', a
   expect(cfg.notify.extra).toBe('kept');
 });
 
+// `command` must be an argv array. A string is the plausible typo, and it used to be the
+// expensive one: `cfg.command?.length` is truthy for a string, so notifier.enabled stayed
+// true and the config looked fine, then `.map()` on a string threw inside send()'s own
+// catch - which logs and returns false. A typo therefore silently disabled the only
+// channel that would have reported it. It must be dropped by the loader instead, and say
+// so where an operator looks: the startup log and configIssues on /status.
+test('a wrong-typed notify.command is dropped and recorded, never reaching the notifier', async () => {
+  writeFileSync(
+    join(dir, 'config.json'),
+    JSON.stringify({ notify: { webhookUrl: 'https://example.com/hook', command: 'notify-send hi' } }),
+  );
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+
+  expect(cfg.notify.command).toBeUndefined();
+  expect(cfg.notify.webhookUrl).toBe('https://example.com/hook'); // the good key survives
+  expect(cfg.configIssues).toHaveLength(1);
+  expect(cfg.configIssues[0]).toContain('"notify.command" is a string');
+
+  // These four keys have no entry in DEFAULTS.notify, so the message must not claim to be
+  // "using default undefined" - the notifier's own fallback takes over instead.
+  expect(cfg.configIssues[0]).toContain('ignoring it');
+  expect(cfg.configIssues[0]).not.toContain('undefined');
+
+  // The proof that matters: what loadConfig produced cannot break the notifier. A string
+  // command would have made this true and then thrown on send().
+  const { Notifier } = await import('../src/notify');
+  expect(new Notifier(cfg.notify).enabled).toBe(true);
+});
+
+test('each remaining notify key is type-checked, and a good one of the same name survives', async () => {
+  writeFileSync(
+    join(dir, 'config.json'),
+    JSON.stringify({ notify: { method: 42, headers: 'not-an-object', body: ['nope'], command: ['notify-send', 'ok'] } }),
+  );
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+
+  expect(cfg.notify.method).toBeUndefined();
+  expect(cfg.notify.headers).toBeUndefined();
+  expect(cfg.notify.body).toBeUndefined();
+  // Control: a correctly-typed command is not collateral damage of the three rejections.
+  expect(cfg.notify.command).toEqual(['notify-send', 'ok']);
+  expect(cfg.configIssues).toHaveLength(3);
+});
+
+// The keys notifyShape does not enumerate still pass through untouched - the loader
+// validates what it knows and preserves what it doesn't, so a newer notify option can be
+// set against an older build without being stripped.
+test('an unknown notify key is preserved alongside validated ones', async () => {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ notify: { headers: { 'X-Token': 'abc' }, futureOption: 'kept' } }));
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+  // Through `unknown`: Config['notify'] deliberately has no index signature, so reading a
+  // key the type does not declare is exactly what this test is about.
+  const notify = cfg.notify as unknown as Record<string, unknown>;
+
+  expect(notify.futureOption).toBe('kept');
+  expect(cfg.notify.headers).toEqual({ 'X-Token': 'abc' }); // a valid headers object is kept
+  expect(cfg.configIssues).toEqual([]);
+});
+
 // A hand-edited config.json that fails to parse must not throw at module load - that runs
 // before launchd's KeepAlive would notice a crash, and before the notifier exists, so an
 // uncaught throw here becomes a silent restart loop (see the comment in loadConfig()).

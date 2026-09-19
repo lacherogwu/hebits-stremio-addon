@@ -72,13 +72,23 @@ const DEFAULTS: Omit<Config, 'token' | 'configIssues'> = {
 // and is logged and recorded in configIssues; every other field - including keys this
 // version of the code doesn't know about - is honoured untouched.
 
-// Deliberately narrower than Config['notify']. validateOptions() below only *checks* the
-// keys listed here; every other key on the received object survives untouched, which is
-// how `method`, `headers`, `body` and `command` reach the notifier. Listing them here too
-// would be a behaviour change (a wrong-typed `headers` would start falling back to the
-// default instead of being passed through), so the shape stays as it is.
+// Every key notify.ts reads, so what the loader checks matches what Config['notify']
+// promises. Only `webhookUrl` has an entry in DEFAULTS.notify; the other four have no
+// default here and a bad one is simply dropped, leaving the notifier's own fallback
+// (method 'POST', DEFAULT_BODY, no headers, no command) - see validateOptions().
+//
+// `command` is the one that bites. A string instead of an argv array makes
+// `cfg.command?.length` truthy, so `notifier.enabled` stays true and nothing looks wrong,
+// and then `.map()` on a string throws inside send()'s own catch - which logs and returns
+// false. The result is a config typo silently disabling the only channel that would have
+// told the owner about it. Validating here turns that into a startup log line and a
+// configIssues entry on /status.
 const notifyShape: Record<string, z.ZodType> = {
   webhookUrl: z.string(),
+  method: z.string(),
+  headers: z.record(z.string(), z.string()),
+  body: z.string(),
+  command: z.array(z.string()),
 };
 
 // Top-level scalar fields (everything in DEFAULTS except the nested notify object, which
@@ -203,7 +213,12 @@ function validateOptions(
     if (!(key in out)) continue;
     const result = schema.safeParse(out[key]);
     if (!result.success) {
-      logIssue(`"${name}.${key}" is a ${typeOf(out[key])}, not the expected type - using default ${JSON.stringify(defaults[key])}`, issues);
+      // Not every validated key has a default to name: notify's `method`, `headers`,
+      // `body` and `command` are absent from DEFAULTS.notify, and "using default
+      // undefined" would tell the operator nothing about what now happens. Dropping the
+      // key is the same action either way; only the wording differs.
+      const fix = key in defaults ? `using default ${JSON.stringify(defaults[key])}` : 'ignoring it';
+      logIssue(`"${name}.${key}" is a ${typeOf(out[key])}, not the expected type - ${fix}`, issues);
       delete out[key];
     }
   }

@@ -14,7 +14,8 @@
     "start": "node dist/server.mjs",
     "deploy": "scripts/deploy.sh",
     "format": "biome format --write .",
-    "lint": "biome lint ."
+    "lint": "biome lint .",
+    "check": "biome check ."
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
