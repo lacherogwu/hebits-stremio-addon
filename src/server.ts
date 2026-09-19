@@ -316,7 +316,11 @@ app.all('*', async (c) => {
   }
 });
 
-// launchd keeps the log file open in append mode: copy then truncate.
+// launchd's StandardOutPath/StandardErrorPath keep LOG_FILE open in append mode for the
+// life of the process, so a rename here would leave that fd writing to the old (now
+// unlinked) inode forever - the plist must point at this exact path (cfg.logFile) for that
+// to be true. Truncating in place is what makes rotation work with an fd launchd owns:
+// do NOT "simplify" this into a rename/move, it would silently break rotation.
 function rotateLog(): void {
   try {
     if (statSync(LOG_FILE).size < 20 * 1024 * 1024) return;

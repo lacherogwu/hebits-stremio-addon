@@ -114,3 +114,34 @@ test('a bad nested notify field falls back while the rest of notify survives', a
   expect(cfg.notify.webhookUrl).toBe(''); // default
   expect(cfg.notify.extra).toBe('kept');
 });
+
+// A hand-edited config.json that fails to parse must not throw at module load - that runs
+// before launchd's KeepAlive would notice a crash, and before the notifier exists, so an
+// uncaught throw here becomes a silent restart loop (see the comment in loadConfig()).
+test('malformed JSON in config.json is treated as no saved config, not a throw', async () => {
+  writeFileSync(join(dir, 'config.json'), '{ this is not valid json');
+  const { loadConfig } = await import('../src/config');
+  let cfg: ReturnType<typeof loadConfig> | undefined;
+  expect(() => {
+    cfg = loadConfig();
+  }).not.toThrow();
+  expect(cfg?.token).toBeTruthy();
+  expect(cfg?.configIssues.some((m) => m.toLowerCase().includes('json'))).toBe(true);
+});
+
+// deploy/config.example.json's own torrentDir has crashed the service into a launchd
+// restart loop before (an unguarded mkdirSync threw ENOENT for a path macOS can't create) -
+// this pins that a bad custom torrentDir falls back to the default instead.
+test('an uncreatable torrentDir falls back to the default and is recorded in configIssues', async () => {
+  const blocker = join(dir, 'blocker'); // a file, not a directory
+  writeFileSync(blocker, 'not a directory');
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ torrentDir: join(blocker, 'torrents') }));
+  const { loadConfig, CONFIG_DIR } = await import('../src/config');
+  let cfg: ReturnType<typeof loadConfig> | undefined;
+  expect(() => {
+    cfg = loadConfig();
+  }).not.toThrow();
+  expect(cfg?.torrentDir).toBe(join(CONFIG_DIR, 'torrents'));
+  expect(cfg?.configIssues.some((m) => m.includes('torrentDir'))).toBe(true);
+  expect(() => statSync(cfg?.torrentDir as string)).not.toThrow();
+});

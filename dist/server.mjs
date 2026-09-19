@@ -10625,15 +10625,19 @@ function loadConfig() {
 		recursive: true,
 		mode: 448
 	});
+	const configIssues = [];
 	let saved = {};
-	if (existsSync(CONFIG_FILE)) saved = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
+	if (existsSync(CONFIG_FILE)) try {
+		saved = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
+	} catch (e) {
+		logIssue(`config.json could not be read (${e.message}) - starting from defaults`, configIssues);
+	}
 	let token = saved.token;
 	if (!token) {
 		token = randomBytes(16).toString("hex");
 		saved.token = token;
 		writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 384 });
 	}
-	const configIssues = [];
 	const validated = { ...saved };
 	for (const [key, schema] of Object.entries(fieldSchemas)) {
 		if (!(key in saved)) continue;
@@ -10651,10 +10655,19 @@ function loadConfig() {
 		token,
 		configIssues
 	};
-	mkdirSync(cfg.torrentDir, {
-		recursive: true,
-		mode: 448
-	});
+	try {
+		mkdirSync(cfg.torrentDir, {
+			recursive: true,
+			mode: 448
+		});
+	} catch (e) {
+		logIssue(`"torrentDir" (${cfg.torrentDir}) could not be created: ${e.message} - using default`, configIssues);
+		cfg.torrentDir = DEFAULTS.torrentDir;
+		mkdirSync(cfg.torrentDir, {
+			recursive: true,
+			mode: 448
+		});
+	}
 	return cfg;
 }
 function readCookie(path) {

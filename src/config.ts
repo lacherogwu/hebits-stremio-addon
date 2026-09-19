@@ -133,8 +133,19 @@ function validateOptions(
 
 export function loadConfig(): Config {
   mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  const configIssues: string[] = [];
   let saved: Record<string, unknown> = {};
-  if (existsSync(CONFIG_FILE)) saved = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+  // A hand-edited config.json that fails to parse (trailing comma, truncated write, ...)
+  // must not throw here: this runs at module load, before the notifier exists, so an
+  // uncaught throw becomes a silent launchd restart loop - see loadConfig()'s own comment
+  // above validateScalar() for why every other field gets the same treatment.
+  if (existsSync(CONFIG_FILE)) {
+    try {
+      saved = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+    } catch (e) {
+      logIssue(`config.json could not be read (${(e as Error).message}) - starting from defaults`, configIssues);
+    }
+  }
   let token = saved.token as string | undefined;
   if (!token) {
     token = randomBytes(16).toString('hex');
@@ -142,7 +153,6 @@ export function loadConfig(): Config {
     writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
   }
 
-  const configIssues: string[] = [];
   // Unknown keys (not in DEFAULTS) start here and are never touched below, so they survive
   // into the merged config untouched, per the "preserve, don't reject" requirement.
   const validated: Record<string, unknown> = { ...saved };
@@ -161,7 +171,16 @@ export function loadConfig(): Config {
     };
 
   const cfg: Config = { ...DEFAULTS, ...validated, token, configIssues } as Config;
-  mkdirSync(cfg.torrentDir, { recursive: true, mode: 0o700 });
+  // A bad custom torrentDir (unwritable parent, a path through a file, ...) must not throw
+  // here either, for the same reason as the JSON.parse above - fall back to the default,
+  // which lives inside CONFIG_DIR and is always creatable once that mkdirSync succeeded.
+  try {
+    mkdirSync(cfg.torrentDir, { recursive: true, mode: 0o700 });
+  } catch (e) {
+    logIssue(`"torrentDir" (${cfg.torrentDir}) could not be created: ${(e as Error).message} - using default`, configIssues);
+    cfg.torrentDir = DEFAULTS.torrentDir;
+    mkdirSync(cfg.torrentDir, { recursive: true, mode: 0o700 });
+  }
   return cfg;
 }
 

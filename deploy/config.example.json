@@ -4,14 +4,11 @@
   "qbitUsername": "",
   "qbitPassword": "",
   "watchCategory": "watch",
-  "watchPath": "/home/you/hebits/watch",
+  "watchPath": "/Users/<you>/hebits/watch",
   "timezone": "Asia/Jerusalem",
   "dailyLimit": 10,
   "dailyLimitByDay": {},
   "minFreeGB": 20,
   "notify": { "webhookUrl": "" },
-  "torrentDir": "/home/you/.config/hebits-stremio-addon/torrents",
-  "logFile": "/home/you/.config/hebits-stremio-addon/addon.log",
-  "cookiePath": "/home/you/.config/hebits-stremio-addon/cookie.txt",
-  "token": ""
+  "cookiePath": "/Users/<you>/.config/hebits-account-builder/cookie.txt"
 }

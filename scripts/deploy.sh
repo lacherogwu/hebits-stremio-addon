@@ -4,6 +4,8 @@
 #   echo my-ssh-host > .deploy-host             # ...once, in a git-ignored file
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
+
 HOST="${DEPLOY_HOST:-$(cat .deploy-host 2>/dev/null || true)}"
 if [[ -z "$HOST" ]]; then
   echo "No deploy host. Set DEPLOY_HOST=<ssh-host>, or write it to .deploy-host (git-ignored):" >&2
@@ -11,7 +13,6 @@ if [[ -z "$HOST" ]]; then
   exit 1
 fi
 DEST="Applications/hebits-stremio-addon"
-cd "$(dirname "$0")/.."
 
 echo "→ typecheck + tests"
 npm run typecheck
@@ -29,21 +30,51 @@ echo "→ copying v$VERSION to $HOST:$DEST/dist/"
 ssh "$HOST" "mkdir -p $DEST/dist"
 rsync -az dist/server.mjs "$HOST:$DEST/dist/server.mjs"
 
-echo "→ restarting"
-ssh "$HOST" 'launchctl kickstart -k gui/$(id -u)/org.user.hebits-addon'
+# Restart and verify in one remote block, so the PID launchd just started and the version
+# the manifest reports both come from the same kickstart - a separate poll could otherwise
+# hit whatever was already listening before the old process finished exiting.
+echo "→ restarting and waiting for it to answer as v$VERSION"
+if ! ssh "$HOST" VERSION="$VERSION" 'bash -s' <<'REMOTE'
+LABEL=org.user.hebits-addon
+DOMAIN="gui/$(id -u)/$LABEL"
+N=~/Applications/node/bin/node
+CFG=~/.config/hebits-stremio-addon/config.json
 
-echo "→ waiting for it to answer"
-ssh "$HOST" 'bash -s' <<'REMOTE'
-T=$(~/Applications/node/bin/node -p 'require(process.env.HOME + "/.config/hebits-stremio-addon/config.json").token')
+if ! PID=$(launchctl kickstart -kp "$DOMAIN" 2>&1); then
+  echo "✗ launchctl kickstart failed - the LaunchAgent probably isn't installed on this host yet:" >&2
+  echo "$PID" >&2
+  echo "  One-time setup on this host:" >&2
+  echo "    sed \"s|__HOME__|\$HOME|g\" deploy/org.user.hebits-addon.plist > ~/Library/LaunchAgents/$LABEL.plist" >&2
+  echo "    launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/$LABEL.plist" >&2
+  exit 1
+fi
+
+# port is optional in config.json - a bare `require(...).port` would print the string
+# "undefined" and silently poll a dead URL, so fall back explicitly.
+PORT=$("$N" -p "require('$CFG').port || 7000" 2>/dev/null || echo 7000)
+TOKEN=$("$N" -p "require('$CFG').token" 2>/dev/null || true)
+if [[ -z "$TOKEN" || "$TOKEN" == "undefined" ]]; then
+  echo "✗ could not read a token from $CFG - is the addon configured on this host?" >&2
+  exit 1
+fi
+
 for _ in $(seq 1 20); do
-  if curl -fsS -m 2 "http://127.0.0.1:7000/$T/manifest.json" >/dev/null 2>&1; then
-    echo "✓ addon is answering"
-    tail -n 3 ~/Library/Logs/hebits-addon.log
+  BODY=$(curl -fsS -m 2 "http://127.0.0.1:$PORT/$TOKEN/manifest.json" 2>/dev/null || true)
+  LIVE_VERSION=$(printf '%s' "$BODY" | grep -o '"version":"[^"]*"' | head -n1 | cut -d'"' -f4)
+  # Match on version AND that the PID this kickstart started is still alive - a version
+  # match alone still passes on a same-version redeploy against a process that never
+  # actually restarted.
+  if [[ -n "$LIVE_VERSION" && "$LIVE_VERSION" == "$VERSION" ]] && kill -0 "$PID" 2>/dev/null; then
+    echo "✓ addon v$VERSION is answering (pid $PID)"
+    tail -n 3 ~/.config/hebits-stremio-addon/addon.log
     exit 0
   fi
   sleep 1
 done
-echo "✗ addon did not come up; last log lines:"
-tail -n 20 ~/Library/Logs/hebits-addon.log
+echo "✗ addon did not come up as v$VERSION (pid $PID); last log lines:" >&2
+tail -n 20 ~/.config/hebits-stremio-addon/addon.log >&2
 exit 1
 REMOTE
+then
+  exit 1
+fi
