@@ -11,7 +11,7 @@ blocked immediately. Nothing here proxies through TorBox, AIOStreams or similar 
 torrent downloads, seeds and stays on the machine this addon runs on.
 
 ```
- Stremio / Nuvio ──stream list──►  this addon :7000 ──cookie──► hebits.net
+ Stremio / Nuvio ──stream list──►  this addon :18700 ──cookie──► hebits.net
         │                              │
         └────────── plays file ◄───────┴──► qBittorrent :8080 (downloads + seeds forever)
              (home network)
@@ -114,20 +114,24 @@ node dist/server.mjs
 The first run creates `~/.config/hebits-stremio-addon/config.json` with a random `token` and
 prints the listening banner (see [Configuration](#configuration)).
 
-The default port, `7000`, collides with the AirPlay Receiver service on macOS. If the addon
-exits complaining the port is already in use, set `port` to something else (e.g. `7001`) in
-`config.json`.
+The default port, `18700`, is chosen rather than round: it sits **below the range the OS hands
+out for outbound connections** (49152+ on macOS and Windows, 32768+ on Linux), so it cannot
+lose a bind race to a transient client port, and it is not a port a common service claims.
+Round, low ports are the ones everything picks — `7000` and `5000` are both taken by AirPlay
+Receiver on macOS, and `3000`, `8000` and `8080` by everything else. If it still collides, set
+`port` in `config.json`; the addon exits with a message naming the port rather than a stack
+trace.
 
 Add the addon to Stremio/Nuvio with:
 
 ```
-http://<host>:7000/<token>/manifest.json
+http://<host>:18700/<token>/manifest.json
 ```
 
 where `<host>` is this machine's address on your network and `<token>` is the value written
 to `config.json`.
 
-Then paste a Hebits cookie at `http://<host>:7000/<token>/cookie` — until you do, the addon
+Then paste a Hebits cookie at `http://<host>:18700/<token>/cookie` — until you do, the addon
 runs but every search comes back empty. See
 [The Hebits login cookie](#the-hebits-login-cookie).
 
@@ -160,7 +164,7 @@ After an upgrade, ask the running addon for its version rather than assuming the
 took — a supervisor that failed to restart leaves the old process answering happily:
 
 ```bash
-curl -s "http://127.0.0.1:7000/<token>/manifest.json" | grep -o '"version":"[^"]*"'
+curl -s "http://127.0.0.1:18700/<token>/manifest.json" | grep -o '"version":"[^"]*"'
 ```
 
 ### Reading the token
@@ -172,7 +176,7 @@ run. Read it back on the machine it runs on:
 node -p "require(process.env.HOME + '/.config/hebits-stremio-addon/config.json').token"
 ```
 
-The addon is then at `http://<host>:7000/<token>/manifest.json`, which is the URL to install
+The addon is then at `http://<host>:18700/<token>/manifest.json`, which is the URL to install
 in Stremio or Nuvio.
 
 ### Last step: install a cookie
@@ -181,7 +185,7 @@ A freshly installed addon has no Hebits cookie, so searches return nothing and t
 look empty — it is working, but blind. Open
 
 ```
-http://<host>:7000/<token>/cookie
+http://<host>:18700/<token>/cookie
 ```
 
 and paste a cookie, following the instructions on the page. It takes effect immediately.
@@ -199,7 +203,7 @@ supervised service has to be handed explicitly — see
 | Key | Default | Meaning |
 |---|---|---|
 | `token` | random, generated on first run | Secret path segment every route sits behind |
-| `port` | `7000` | Listen port, all interfaces |
+| `port` | `18700` | Listen port, all interfaces |
 | `dailyLimit` | `10` | Fallback only; used when Hebits' own profile counter can't be read |
 | `dailyLimitByDay` | `{}` | Per-day overrides, e.g. `{"2026-09-17": 5}` for a new account's first day |
 | `minFreeGB` | `20` | Refuse a new download that would leave less free space than this |
@@ -257,7 +261,7 @@ lookups.
 
 ## Routes
 
-Every route sits behind the secret token: `http://<host>:7000/<token>/…`
+Every route sits behind the secret token: `http://<host>:18700/<token>/…`
 
 | Route | Purpose |
 |---|---|
@@ -274,7 +278,7 @@ The addon authenticates to Hebits with a browser session cookie, stored in the f
 `cookiePath` (mode `600`). Install or replace it at:
 
 ```
-http://<host>:7000/<token>/cookie
+http://<host>:18700/<token>/cookie
 ```
 
 The page shows the current login status and tells you how to copy the cookie out of your
@@ -296,7 +300,7 @@ it lives in is git-ignored.
 
 Configure a webhook, a local command, or both. Both fire on each alert; if neither is set,
 notifications are simply off. Test whatever you configure at
-`http://<host>:7000/<token>/notify-test`.
+`http://<host>:18700/<token>/notify-test`.
 
 | `notify` key | Meaning |
 |---|---|

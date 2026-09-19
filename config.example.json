@@ -1,5 +1,5 @@
 {
-  "port": 7000,
+  "port": 18700,
   "qbitUrl": "http://127.0.0.1:8080",
   "qbitUsername": "",
   "qbitPassword": "",

@@ -57,7 +57,7 @@ export interface Config {
 }
 
 const DEFAULTS: Omit<Config, 'token' | 'configIssues'> = {
-  port: 7000,
+  port: 18700,
   dailyLimit: 10,
   dailyLimitByDay: {},
   minFreeGB: 20,

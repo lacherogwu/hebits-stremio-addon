@@ -10556,7 +10556,7 @@ const HOME = homedir();
 const CONFIG_DIR = process.env.HEBITS_ADDON_DIR || join(HOME, ".config", "hebits-stremio-addon");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 const DEFAULTS = {
-	port: 7e3,
+	port: 18700,
 	dailyLimit: 10,
 	dailyLimitByDay: {},
 	minFreeGB: 20,
@@ -13063,7 +13063,7 @@ serve({
 	port: cfg.port
 }, () => log(`hebits addon v${VERSION} listening on :${cfg.port}`)).on("error", (err) => {
 	if (err.code === "EADDRINUSE") {
-		log(`port ${cfg.port} is already in use. Change "port" in config.json (see the README) and try again.`);
+		log(`port ${cfg.port} is already in use. Set a different "port" in config.json and start again.`);
 		process.exit(1);
 	}
 	throw err;

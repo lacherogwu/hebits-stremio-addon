@@ -392,11 +392,13 @@ const server = serve({ fetch: fetchWithRawHead, hostname: '0.0.0.0', port: cfg.p
   log(`hebits addon v${VERSION} listening on :${cfg.port}`),
 );
 
-// The default port collides with the AirPlay Receiver service on macOS (see the README),
-// so a first run there is a likely EADDRINUSE - explain it instead of a raw stack dump.
+// A port collision is the one startup failure this process cannot fix by itself: picking a
+// free port instead would change the manifest URL, and that URL is installed on a TV. So it
+// exits - but it says which port and what to do, because under a supervisor that restarts on
+// exit this becomes a loop, and a loop whose log is a stack trace tells nobody anything.
 server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
-    log(`port ${cfg.port} is already in use. Change "port" in config.json (see the README) and try again.`);
+    log(`port ${cfg.port} is already in use. Set a different "port" in config.json and start again.`);
     process.exit(1);
   }
   throw err;

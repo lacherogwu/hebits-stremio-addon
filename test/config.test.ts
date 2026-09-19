@@ -616,3 +616,15 @@ test('the default rate does not warn', async () => {
   const { loadConfig } = await import('../src/config');
   expect(loadConfig().configIssues).toEqual([]);
 });
+
+// The default port is a decision, not an accident: below the range the OS hands out for
+// outbound connections (49152+ on macOS/Windows, 32768+ on Linux) so it cannot lose a bind
+// race, and clear of the round ports common services claim - 7000 and 5000 are AirPlay
+// Receiver on macOS, which is what the old default collided with. Pinned so it cannot drift
+// away from what the README tells an operator to expect.
+test('the default port is 18700', async () => {
+  const { loadConfig } = await import('../src/config');
+  const port = loadConfig().port;
+  expect(port).toBe(18700);
+  expect(port).toBeLessThan(32768); // below every common ephemeral range
+});
