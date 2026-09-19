@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -135,22 +135,46 @@ export function loadConfig(): Config {
   mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   const configIssues: string[] = [];
   let saved: Record<string, unknown> = {};
+  // Whether it's safe to write CONFIG_FILE below. Stays true unless a malformed file
+  // below couldn't even be moved aside - writing then would overwrite the operator's
+  // original bytes with nothing but a fresh token, which is strictly worse than leaving
+  // the broken file in place untouched.
+  let canWrite = true;
   // A hand-edited config.json that fails to parse (trailing comma, truncated write, ...)
   // must not throw here: this runs at module load, before the notifier exists, so an
   // uncaught throw becomes a silent launchd restart loop - see loadConfig()'s own comment
-  // above validateScalar() for why every other field gets the same treatment.
+  // above validateScalar() for why every other field gets the same treatment. But treating
+  // the parse failure as plain "no saved config" is worse than the throw it replaces: the
+  // token block just below would then overwrite config.json with nothing but a fresh
+  // token, destroying every other setting AND rotating the token under every
+  // already-installed Stremio/Nuvio client - a typo silently costing the operator their
+  // whole config and every client's URL. So move the broken file aside first; the
+  // operator recovers by fixing the one bad character and restoring it.
   if (existsSync(CONFIG_FILE)) {
     try {
       saved = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
     } catch (e) {
-      logIssue(`config.json could not be read (${(e as Error).message}) - starting from defaults`, configIssues);
+      const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
+      try {
+        renameSync(CONFIG_FILE, badPath);
+        logIssue(`config.json could not be parsed (${(e as Error).message}) - the original was moved to ${badPath}; starting from defaults`, configIssues);
+      } catch (renameError) {
+        // Couldn't even move it aside (e.g. the config dir isn't writable) - leave the
+        // file exactly as it is and run this process from in-memory defaults only. Do
+        // NOT fall through to the write below.
+        canWrite = false;
+        logIssue(
+          `config.json could not be parsed (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running from in-memory defaults only, config.json left untouched`,
+          configIssues,
+        );
+      }
     }
   }
   let token = saved.token as string | undefined;
   if (!token) {
     token = randomBytes(16).toString('hex');
     saved.token = token;
-    writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
+    if (canWrite) writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
   }
 
   // Unknown keys (not in DEFAULTS) start here and are never touched below, so they survive
@@ -173,13 +197,20 @@ export function loadConfig(): Config {
   const cfg: Config = { ...DEFAULTS, ...validated, token, configIssues } as Config;
   // A bad custom torrentDir (unwritable parent, a path through a file, ...) must not throw
   // here either, for the same reason as the JSON.parse above - fall back to the default,
-  // which lives inside CONFIG_DIR and is always creatable once that mkdirSync succeeded.
+  // which lives inside CONFIG_DIR and is normally creatable since that mkdirSync already
+  // succeeded above. "Normally" is doing real work in that sentence: a plain file named
+  // "torrents" sitting inside CONFIG_DIR would make the fallback fail too, so that retry
+  // is guarded as well - the module-load path must not throw no matter what's on disk.
   try {
     mkdirSync(cfg.torrentDir, { recursive: true, mode: 0o700 });
   } catch (e) {
     logIssue(`"torrentDir" (${cfg.torrentDir}) could not be created: ${(e as Error).message} - using default`, configIssues);
     cfg.torrentDir = DEFAULTS.torrentDir;
-    mkdirSync(cfg.torrentDir, { recursive: true, mode: 0o700 });
+    try {
+      mkdirSync(cfg.torrentDir, { recursive: true, mode: 0o700 });
+    } catch (e2) {
+      logIssue(`the default torrentDir (${cfg.torrentDir}) could not be created either: ${(e2 as Error).message} - torrent caching will fail until this is fixed`, configIssues);
+    }
   }
   return cfg;
 }

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
@@ -118,15 +118,54 @@ test('a bad nested notify field falls back while the rest of notify survives', a
 // A hand-edited config.json that fails to parse must not throw at module load - that runs
 // before launchd's KeepAlive would notice a crash, and before the notifier exists, so an
 // uncaught throw here becomes a silent restart loop (see the comment in loadConfig()).
-test('malformed JSON in config.json is treated as no saved config, not a throw', async () => {
-  writeFileSync(join(dir, 'config.json'), '{ this is not valid json');
-  const { loadConfig } = await import('../src/config');
+// It also must not be silently overwritten: an earlier fix replaced the throw with exactly
+// that (the token block ran through and clobbered config.json with just a fresh token,
+// losing every other setting AND rotating the token under every installed client), so this
+// asserts the file-on-disk property directly rather than just a configIssues substring -
+// a message mentioning "config.json" would have passed the old (too weak) version of this
+// test even while the bug was live.
+test('malformed JSON in config.json is moved aside, not silently destroyed', async () => {
+  const original = '{ "port": 7001, "qbitUsername": "alice", "notify": { "webhookUrl": "https://example.com/hook" }, "token": "original-token-value"';
+  writeFileSync(join(dir, 'config.json'), original);
+  const { loadConfig, CONFIG_DIR } = await import('../src/config');
   let cfg: ReturnType<typeof loadConfig> | undefined;
   expect(() => {
     cfg = loadConfig();
   }).not.toThrow();
-  expect(cfg?.token).toBeTruthy();
-  expect(cfg?.configIssues.some((m) => m.toLowerCase().includes('json'))).toBe(true);
+
+  // The operator's original bytes must survive intact under a renamed path.
+  const badFile = readdirSync(CONFIG_DIR).find((f) => f.startsWith('config.json.bad-'));
+  expect(badFile).toBeTruthy();
+  expect(readFileSync(join(CONFIG_DIR, badFile as string), 'utf8')).toBe(original);
+
+  // config.json itself is a fresh, valid file - not the operator's settings minus
+  // everything but a token, and not the old (unrecoverable-from-broken-JSON) token either.
+  const rewritten = JSON.parse(readFileSync(join(CONFIG_DIR, 'config.json'), 'utf8'));
+  expect(rewritten.token).toBeTruthy();
+  expect(rewritten.token).not.toBe('original-token-value');
+  expect(cfg?.token).toBe(rewritten.token);
+
+  expect(cfg?.configIssues.some((m) => m.includes(badFile as string))).toBe(true);
+});
+
+test('a config.json that cannot even be moved aside runs from in-memory defaults, file untouched', async () => {
+  const original = '{ this is not valid json';
+  const cfgPath = join(dir, 'config.json');
+  writeFileSync(cfgPath, original);
+  chmodSync(dir, 0o500); // read+exec only: renameSync into/out of it fails with EACCES
+  try {
+    const { loadConfig } = await import('../src/config');
+    let cfg: ReturnType<typeof loadConfig> | undefined;
+    expect(() => {
+      cfg = loadConfig();
+    }).not.toThrow();
+    expect(cfg?.token).toBeTruthy(); // still usable this run, just never written to disk
+    expect(cfg?.configIssues.some((m) => m.includes('could not be moved aside'))).toBe(true);
+  } finally {
+    chmodSync(dir, 0o700); // restore so the temp dir can be cleaned up
+  }
+  expect(readFileSync(cfgPath, 'utf8')).toBe(original); // left exactly as it was
+  expect(existsSync(join(dir, 'config.json.bad-'))).toBe(false);
 });
 
 // deploy/config.example.json's own torrentDir has crashed the service into a launchd

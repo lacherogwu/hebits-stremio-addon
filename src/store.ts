@@ -66,11 +66,33 @@ export class Store {
 
   // log: this is a cache and event log, not the source of truth (qBittorrent is), so a
   // failed save must never crash the process. It logs loudly instead and returns false.
+  // The load side has to honour that same rule: this constructor runs before the Notifier
+  // exists (see server.ts), so an uncaught throw here is the identical silent launchd
+  // restart loop that config.ts's loadConfig() guards against. A corrupt state.json is
+  // moved aside rather than left to be silently overwritten by the next save() - the
+  // documented fallback ({ grabs: [], torrents: {} }) is safe to run with (today's
+  // fallback download count resets to zero; qBittorrent, the real source of truth, is
+  // unaffected).
   constructor(dir: string, timezone: string, log: (message: string) => void = () => {}) {
     this.file = join(dir, 'state.json');
     this.timezone = timezone;
     this.log = log;
-    this.data = existsSync(this.file) ? (JSON.parse(readFileSync(this.file, 'utf8')) as StoreData) : { grabs: [], torrents: {} };
+    this.data = { grabs: [], torrents: {} };
+    if (existsSync(this.file)) {
+      try {
+        this.data = JSON.parse(readFileSync(this.file, 'utf8')) as StoreData;
+      } catch (e) {
+        const badPath = `${this.file}.bad-${Date.now()}`;
+        try {
+          renameSync(this.file, badPath);
+          this.log(`store: state.json could not be parsed (${(e as Error).message}) - moved aside to ${badPath}; today's grab count starts over`);
+        } catch (renameError) {
+          this.log(
+            `store: state.json could not be parsed (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running with an empty in-memory store; state.json left untouched`,
+          );
+        }
+      }
+    }
   }
 
   save(): boolean {

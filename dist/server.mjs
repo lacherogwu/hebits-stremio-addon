@@ -10627,16 +10627,24 @@ function loadConfig() {
 	});
 	const configIssues = [];
 	let saved = {};
+	let canWrite = true;
 	if (existsSync(CONFIG_FILE)) try {
 		saved = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
 	} catch (e) {
-		logIssue(`config.json could not be read (${e.message}) - starting from defaults`, configIssues);
+		const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
+		try {
+			renameSync(CONFIG_FILE, badPath);
+			logIssue(`config.json could not be parsed (${e.message}) - the original was moved to ${badPath}; starting from defaults`, configIssues);
+		} catch (renameError) {
+			canWrite = false;
+			logIssue(`config.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running from in-memory defaults only, config.json left untouched`, configIssues);
+		}
 	}
 	let token = saved.token;
 	if (!token) {
 		token = randomBytes(16).toString("hex");
 		saved.token = token;
-		writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 384 });
+		if (canWrite) writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 384 });
 	}
 	const validated = { ...saved };
 	for (const [key, schema] of Object.entries(fieldSchemas)) {
@@ -10663,10 +10671,14 @@ function loadConfig() {
 	} catch (e) {
 		logIssue(`"torrentDir" (${cfg.torrentDir}) could not be created: ${e.message} - using default`, configIssues);
 		cfg.torrentDir = DEFAULTS.torrentDir;
-		mkdirSync(cfg.torrentDir, {
-			recursive: true,
-			mode: 448
-		});
+		try {
+			mkdirSync(cfg.torrentDir, {
+				recursive: true,
+				mode: 448
+			});
+		} catch (e2) {
+			logIssue(`the default torrentDir (${cfg.torrentDir}) could not be created either: ${e2.message} - torrent caching will fail until this is fixed`, configIssues);
+		}
 	}
 	return cfg;
 }
@@ -12593,10 +12605,21 @@ var Store = class {
 		this.file = join(dir, "state.json");
 		this.timezone = timezone;
 		this.log = log;
-		this.data = existsSync(this.file) ? JSON.parse(readFileSync(this.file, "utf8")) : {
+		this.data = {
 			grabs: [],
 			torrents: {}
 		};
+		if (existsSync(this.file)) try {
+			this.data = JSON.parse(readFileSync(this.file, "utf8"));
+		} catch (e) {
+			const badPath = `${this.file}.bad-${Date.now()}`;
+			try {
+				renameSync(this.file, badPath);
+				this.log(`store: state.json could not be parsed (${e.message}) - moved aside to ${badPath}; today's grab count starts over`);
+			} catch (renameError) {
+				this.log(`store: state.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running with an empty in-memory store; state.json left untouched`);
+			}
+		}
 	}
 	save() {
 		const tmp = `${this.file}.tmp`;
