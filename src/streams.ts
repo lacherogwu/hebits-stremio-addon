@@ -119,7 +119,10 @@ export function buildStreams({
     } else if (freeBytes !== undefined && it.size > freeBytes - minFreeBytes) {
       status = `⛔ Not enough disk space (${gb(Math.max(0, freeBytes))} free)`;
       blocked = true;
-    } else status = `🎟️ Uses 1 of ${grabsLeft} downloads left today`;
+      // Both numbers, on purpose. "Uses 1 of 9 downloads left today" is accurate and still
+      // reads as though the allowance were 9 - the daily limit is the figure people know, so
+      // the remainder is shown against it.
+    } else status = `🎟️ Uses a download · ${grabsLeft} of ${dailyLimit} left today`;
 
     // Items known only from local state have no fresh swarm/leech info to show.
     const lines = [

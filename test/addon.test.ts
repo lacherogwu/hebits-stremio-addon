@@ -259,7 +259,7 @@ test('a series stream list has the expected ids, order, status labels and play u
       '🎬 Show.Name.S01E02.1080p.WEB-DL.x264-GRP',
       '💾 2.0 GB · 🌱 5 seeds · ⬇️ 3 downloading',
       '⚠️ Counts toward ratio',
-      '🎟️ Uses 1 of 8 downloads left today',
+      '🎟️ Uses a download · 8 of 10 left today',
     ].join('\n'),
   );
   expect(at(streams, 0).description).toContain('▶️ Ready at home');

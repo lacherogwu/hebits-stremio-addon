@@ -11805,7 +11805,7 @@ function buildStreams({ items, local, type, season, episode, grabsLeft, dailyLim
 		} else if (freeBytes !== void 0 && it.size > freeBytes - minFreeBytes) {
 			status = `⛔ Not enough disk space (${gb(Math.max(0, freeBytes))} free)`;
 			blocked = true;
-		} else status = `🎟️ Uses 1 of ${grabsLeft} downloads left today`;
+		} else status = `🎟️ Uses a download · ${grabsLeft} of ${dailyLimit} left today`;
 		const lines = [
 			`🎬 ${it.title}`,
 			it.atHomeOnly ? `💾 ${gb(it.size)}` : `💾 ${gb(it.size)} · 🌱 ${it.seeders ?? 0} seeds · ⬇️ ${downloadingCount({
