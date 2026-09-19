@@ -51,15 +51,33 @@ test('an untagged torrent still produces a usable entry', () => {
 
 // decodeURIComponent throws on a malformed percent-sequence; a Hebits tracker is still
 // findable in the raw, still-encoded magnet string, so isHebitsTorrent must not decode.
+//
+// `tracker: ''` is what makes this a test of that property rather than of nothing. The
+// tracker check runs first and short-circuits, so a fixture that kept the working tracker
+// this one is spread from never reaches the magnet at all - re-adding a decode there would
+// pass. An empty `tracker` is also the real condition: qBittorrent empties that field while
+// no tracker responds, which is exactly when the magnet is the only evidence left, and the
+// stray `%` here is an ordinary torrent name ("100%") from any source, not a Hebits
+// peculiarity - one such torrent anywhere in the client would throw URIError out of the
+// .filter and take the whole catalogue down.
 const malformed: HomeTorrent = {
   ...hebits,
   hash: 'cccc',
+  tracker: '',
   magnet_uri: 'magnet:?xt=urn:btih:cccc&dn=100%&tr=https%3A%2F%2Ftracker.hebits.net%2FKEY%2Fannounce',
 };
 
 test('a malformed magnet does not crash isHebitsTorrent', () => {
   expect(() => isHebitsTorrent(malformed)).not.toThrow();
   expect(isHebitsTorrent(malformed)).toBe(true);
+});
+
+// The control: the same malformed magnet without a Hebits tracker in it is still a clean
+// `false`, so "never decodes" cannot be satisfied by a function that just answers true.
+test('a malformed magnet with no Hebits tracker in it is not a Hebits torrent', () => {
+  const other = { ...malformed, hash: 'ffff', magnet_uri: 'magnet:?xt=urn:btih:ffff&dn=100%&tr=https%3A%2F%2Fother.example%2Fannounce' };
+  expect(() => isHebitsTorrent(other)).not.toThrow();
+  expect(isHebitsTorrent(other)).toBe(false);
 });
 
 test('one malformed torrent does not take down the whole catalogue', async () => {

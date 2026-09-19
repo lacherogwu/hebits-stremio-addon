@@ -210,6 +210,18 @@ export async function serveFile(
       if (!(await pieces.waitFor(piece, pieceWaitMs, isClosed, poll))) break;
       const pieceEnd = (piece + 1) * pieceLength - offset - 1;
       const stop = Math.min(end, pieceEnd);
+      // pieceEnd is the last file byte the piece just waited for covers, so it can only be
+      // below `pos` if the piece index and the byte range disagree - which the arithmetic
+      // above cannot produce, and only a regression in pieceAt() could. Guarding it is
+      // still worth three lines: `pos` would never advance, and the loop would spin on an
+      // await that resolves immediately, starving the event loop - a pegged core in
+      // production, and in the test suite a hang that no test timeout can interrupt
+      // (timers are macrotasks; nothing here yields to one). Breaking turns that into the
+      // stall this loop already knows how to report.
+      if (stop < pos) {
+        log(`play: piece ${piece} does not cover byte ${pos} of ${path} (offset ${offset}, piece length ${pieceLength})`);
+        break;
+      }
       while (pos <= stop && !closed) {
         const len = Math.min(CHUNK, stop - pos + 1);
         const { bytesRead, buffer } = await fh.read(Buffer.allocUnsafe(len), 0, len, pos);

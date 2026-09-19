@@ -11441,6 +11441,10 @@ async function serveFile(req, res, f, log) {
 			if (!await pieces.waitFor(piece, pieceWaitMs, isClosed, poll)) break;
 			const pieceEnd = (piece + 1) * pieceLength - offset - 1;
 			const stop = Math.min(end, pieceEnd);
+			if (stop < pos) {
+				log(`play: piece ${piece} does not cover byte ${pos} of ${path} (offset ${offset}, piece length ${pieceLength})`);
+				break;
+			}
 			while (pos <= stop && !closed) {
 				const len = Math.min(CHUNK, stop - pos + 1);
 				const { bytesRead, buffer } = await fh.read(Buffer.allocUnsafe(len), 0, len, pos);

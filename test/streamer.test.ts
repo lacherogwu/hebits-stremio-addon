@@ -22,6 +22,14 @@ test('pieceAt accounts for the file offset inside the torrent', () => {
   expect(pieceAt(100, 12, 16)).toBe(7);
 });
 
+// Every test here passes `waits`, and none may be "simplified" back to the production
+// FIRST_BYTES_WAIT_MS (25 s) / PIECE_WAIT_MS (120 s). A pieceAt regression makes the
+// streamer wait for a piece that never comes: on the production waits the two tests below
+// printed no result for 75 s and had not finished at 240 s, against a 3.5 s baseline -
+// which on CI reads as a stuck job rather than as a named failure. These values are still
+// far longer than the milliseconds a passing run needs.
+const FAST_WAITS = { firstBytes: 4000, piece: 4000, poll: 20 };
+
 // File of 64 bytes at torrent offset 32, piece length 16 -> file spans pieces 2..5.
 function setup(states: number[]) {
   const dir = mkdtempSync(join(tmpdir(), 'hb-'));
@@ -33,7 +41,7 @@ function setup(states: number[]) {
       return states;
     },
   };
-  const f: Omit<ServeFileTarget, 'hash'> = { qbit, path, size: 64, offset: 32, pieceLength: 16, complete: false };
+  const f: Omit<ServeFileTarget, 'hash'> = { qbit, path, size: 64, offset: 32, pieceLength: 16, complete: false, waits: FAST_WAITS };
   return { data, f };
 }
 
@@ -65,7 +73,7 @@ test('holds back bytes until their piece completes, then continues', async () =>
   const states = [0, 0, 2, 2, 0, 2];
   const { data, f } = setup(states);
   const server = createServer((req, res) => {
-    serveFile(req, res, { ...f, hash: 'h2' }, () => {});
+    serveFile(req, res, { ...f, hash: 'h2', waits: FAST_WAITS }, () => {});
   });
   await new Promise<void>((r) => server.listen(0, r));
   try {
