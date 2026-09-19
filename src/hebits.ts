@@ -13,8 +13,25 @@ import { readCookie } from './config';
 // the next call. A string binds whatever readCookie() returned at startup: the /cookie
 // page then reports success while the running client keeps using the dead cookie — the
 // exact bug that shipped in the sibling service.
+// hebits-client's default throttle is one request every two seconds, and its doc comment
+// says why: "Nothing here is latency-sensitive." That is true of the sibling builder
+// service it was written for and false here - a TV is sitting in front of someone, waiting.
+// Measured against a local stub with the default, through the shipped bundle: 6.0 s for an
+// ordinary stream list, 22.0 s for a nine-season find card, 62.0 s at the 30-query
+// allSeasons fan-out cap. The Jackett setup this replaces issued those same queries with no
+// throttle at all, all at once, for years on this account.
+//
+// So: three per second, shared across every call the process makes (browse, ajax.php,
+// user.php, the .torrent download and each retry of any of them - it is one throttle in the
+// client's transport). That is far short of anything a tracker would read as hammering -
+// strictly gentler than the unthrottled fan-out this addon used to do, and than a person
+// clicking through the site - while bringing the same three paths to 0.3 s, 3.3 s and
+// 10.3 s. Raising it further is the wrong trade: a slow catalogue is recoverable, a banned
+// account is not.
+const RATE_LIMIT = { limit: 3, interval: 1000 };
+
 export function makeHebits(cfg: { cookiePath: string }, options: Omit<HebitsOptions, 'cookie'> = {}): Hebits {
-  return new Hebits({ ...options, cookie: () => readCookie(cfg.cookiePath) ?? '' });
+  return new Hebits({ rateLimit: RATE_LIMIT, ...options, cookie: () => readCookie(cfg.cookiePath) ?? '' });
 }
 
 // `HebitsTorrent.id` is a number; the store is keyed by strings (`Object.keys()` on

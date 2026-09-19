@@ -28,6 +28,16 @@ library, authenticating with a session cookie read from the file at `cookiePath`
 is the only credential involved, and it is installed through the addon's own
 [`/cookie` page](#the-hebits-login-cookie).
 
+**How hard it hits the tracker.** Every call the addon makes — searches, the profile
+counter, `.torrent` downloads and any retry of those — shares one throttle of **3 requests
+per second** (`src/hebits.ts`). The library's own default is one request every two seconds,
+which is right for a background service but not for a TV waiting on a stream list: measured
+against a local stub, the default gave 6.0 s for an ordinary stream list and 22 s for a
+nine-season search card, against 1.0 s and 3.0 s at this setting. It is still far gentler
+than the Jackett setup this replaces, which issued the same queries all at once with no
+throttle at all. The tracker's own download counter is read fresh before a download is ever
+spent, and cached for five minutes for everything that merely displays it (`src/grab.ts`).
+
 ## Catalogs
 
 The addon exposes four catalogs. The names below are exactly as they appear on screen,

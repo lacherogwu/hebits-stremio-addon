@@ -52,18 +52,34 @@ export interface EnsureTorrentOptions {
   savePath?: string;
 }
 
+// How long a displayed download count may be reused - lib/site.js's own CACHE_MS.
+const DAILY_CACHE_MS = 5 * 60 * 1000;
+
 export function makeGrabber({ cfg, store, hebits, qbit, log }: GrabDeps) {
   const withLock = makeLock();
 
+  // hebits-client's dailyDownloads() always reads through to the tracker (it passes
+  // bypassCache, and rightly: a stale allowance is actively wrong to spend against), so
+  // the cheap variant has to live here. lib/grab.js had both - `daily()` for display,
+  // `daily({ fresh: true })` only when about to spend a download - and only the fresh one
+  // survived the port, which put a user.php round-trip (plus the stats call that resolves
+  // the user id) on EVERY stream list, forever, and made tracker load a function of how
+  // much the household browses rather than how much it downloads.
+  let cached: { at: number; value: { used: number; limit: number } } | null = null;
+
   // Downloads used/allowed today: Hebits' own counter when reachable, else local count.
-  async function daily(): Promise<{ used: number; limit: number }> {
+  // `fresh` is not an optimisation knob - see ensureTorrent: nothing may spend a download
+  // against a cached count.
+  async function daily({ fresh = false }: { fresh?: boolean } = {}): Promise<{ used: number; limit: number }> {
+    if (!fresh && cached && Date.now() - cached.at < DAILY_CACHE_MS) return cached.value;
     try {
-      // dailyDownloads() always reads through to the tracker (hebits-client passes
-      // bypassCache), so the old `{ fresh: true }` argument is subsumed, not forgotten: a
-      // cached count must never be what lets a download overspend the allowance.
-      return await hebits.dailyDownloads();
+      const value = await hebits.dailyDownloads();
+      cached = { at: Date.now(), value };
+      return value;
     } catch (e) {
       log(`hebits daily downloads: ${(e as Error).message}`);
+      // Deliberately not cached: the local count is a fallback for one answer, not a fact
+      // about the tracker, so the next call tries the tracker again.
       return { used: store.grabsToday(), limit: store.limitToday(cfg) };
     }
   }
@@ -91,7 +107,9 @@ export function makeGrabber({ cfg, store, hebits, qbit, log }: GrabDeps) {
       if (existsSync(file)) {
         buf = readFileSync(file); // re-adding a torrent we already have doesn't touch Hebits
       } else {
-        const d = await daily();
+        // fresh: a download is about to be spent, so the allowance must come from the
+        // tracker itself, never from the display cache above.
+        const d = await daily({ fresh: true });
         if (d.used >= d.limit) throw new UserError('daily download limit reached');
         const free = await qbit.freeSpace();
         if (meta.size && free !== undefined && meta.size > free - cfg.minFreeGB * GB) throw new UserError('not enough disk space');
@@ -117,6 +135,9 @@ export function makeGrabber({ cfg, store, hebits, qbit, log }: GrabDeps) {
         if (!parsed.private) throw new UserError('torrent is not private; refusing');
         writeFileSync(file, buf, { mode: 0o600 });
         store.recordGrab(hebitsId);
+        // The count just changed; what /status and the stream list show next must not be
+        // the figure from before this grab.
+        cached = null;
         log(`grabbed hebits ${hebitsId} (${meta.title}) into ${category}`);
       }
 

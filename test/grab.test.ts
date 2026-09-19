@@ -176,3 +176,82 @@ test('any other download failure keeps its own class, so it is still a 500', asy
   expect(err).toBeInstanceOf(RateLimitedError);
   expect(err).not.toBeInstanceOf(UserError);
 });
+
+// HAZARD (daily): lib/grab.js had two modes on purpose - a 5-minute cached count for
+// DISPLAY (every stream list, /status) and a fresh one only when about to spend a
+// download. hebits-client's dailyDownloads() always reads through to the tracker, so the
+// port kept the fresh variant and dropped the cheap one: a user.php round-trip (plus the
+// stats call that resolves the user id) on every single stream list, forever.
+test('a displayed download count is served from cache, not a tracker call each time', async () => {
+  let calls = 0;
+  const { grabber } = harness({
+    hebits: {
+      async dailyDownloads() {
+        calls++;
+        return { used: 1, limit: 10 };
+      },
+    },
+  });
+
+  expect(await grabber.daily()).toEqual({ used: 1, limit: 10 });
+  expect(await grabber.daily()).toEqual({ used: 1, limit: 10 });
+  expect(await grabber.daily()).toEqual({ used: 1, limit: 10 });
+  expect(calls).toBe(1);
+});
+
+// The other half, and the one with teeth: the cache must never be what a download is
+// spent against. Here the tracker's count moves to the limit after the display read, so a
+// grab that trusted the cached figure would go ahead and overspend the allowance.
+test('a grab reads the allowance fresh, even with a cached count in hand', async () => {
+  let used = 0;
+  const { grabber, downloaded } = harness({
+    hebits: {
+      async dailyDownloads() {
+        return { used, limit: 10 };
+      },
+    },
+  });
+
+  expect(await grabber.daily()).toEqual({ used: 0, limit: 10 }); // fills the display cache
+  used = 10; // the allowance is spent elsewhere (another client, or the account's own use)
+
+  await expect(grabber.ensureTorrent('1', {})).rejects.toThrow(/daily download limit/);
+  expect(downloaded).toEqual([]); // nothing was fetched from the tracker
+});
+
+// ...and the mirror image: a grab moves the tracker's count, so the next displayed figure
+// must not be the one from before it.
+test('a successful grab invalidates the displayed count', async () => {
+  let used = 0;
+  const { grabber } = harness({
+    hebits: {
+      async dailyDownloads() {
+        return { used, limit: 10 };
+      },
+    },
+  });
+
+  expect(await grabber.daily()).toEqual({ used: 0, limit: 10 });
+  await grabber.ensureTorrent('12345', { imdb: 'tt1' });
+  used = 1; // what Hebits' own counter now says
+  expect(await grabber.daily()).toEqual({ used: 1, limit: 10 });
+});
+
+// The fallback is for one answer, not a fact about the tracker: caching it would keep the
+// local count in place for five minutes after the tracker came back.
+test('the local fallback count is not cached over a tracker that recovers', async () => {
+  let fail = true;
+  const { grabber, store } = harness({
+    hebits: {
+      async dailyDownloads() {
+        if (fail) throw new Error('hebits unreachable');
+        return { used: 4, limit: 10 };
+      },
+    },
+  });
+  store.data.grabs = [{ id: 'x', at: new Date().toISOString() }];
+
+  expect(await grabber.daily()).toEqual({ used: 1, limit: 10 }); // the ledger's own count
+  fail = false;
+  expect(await grabber.daily()).toEqual({ used: 4, limit: 10 });
+});

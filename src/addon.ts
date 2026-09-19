@@ -395,14 +395,36 @@ export function makeAddon({
         return 0;
       };
       const top = Math.min(30, Math.max(1, ...[...byId.values()].map(seasonOf)) + 1);
-      const lists = await Promise.all(Array.from({ length: top }, (_, i) => bySeason(i + 1).catch((): HebitsTorrent[] => [])));
+      // One season failing must not lose the whole card, but it must not vanish either:
+      // this catch takes any error, including the RateLimitedError hebits-client throws
+      // when the tracker itself asks us to slow down, and a silent [] would turn "the
+      // tracker is pushing back" into "that season has no uploads" - a partial card that
+      // looks complete, with nothing in the log to explain it.
+      const lists = await Promise.all(
+        Array.from({ length: top }, (_, i) =>
+          bySeason(i + 1).catch((e: unknown): HebitsTorrent[] => {
+            log(`find ${type} "${name}" season ${i + 1}: ${e instanceof Error ? e.message : String(e)}`);
+            return [];
+          }),
+        ),
+      );
       lists.forEach(collect);
     }
     return [...byId.values()];
   }
 
   async function handleFindMeta(type: MediaType, ref: ParsedFindId, baseUrl: string): Promise<SearchMeta | null> {
-    const items = await findItems(ref.name, type, { allSeasons: true });
+    let items: HebitsTorrent[];
+    try {
+      items = await findItems(ref.name, type, { allSeasons: true });
+    } catch (err) {
+      // The one tracker-touching handler that had no catch: the failure reached the route
+      // as a 500 and never passed through searchFailed(), so there was no noteLogin(false)
+      // and no alert - the owner learned nothing from the one call that failed. Catches any
+      // error type, exactly like its siblings: no narrowing on the alert path, ever.
+      searchFailed(type, ref.name, err);
+      return null; // the route answers 404, which is what an unknown card already did
+    }
     if (!items.length) return null;
     const imdb = items.find((it) => it.imdb)?.imdb;
     const extra = imdb ? await cinemeta(type, imdb) : undefined;

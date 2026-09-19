@@ -10746,8 +10746,13 @@ function writeCookie(path, cookie) {
 }
 //#endregion
 //#region src/hebits.ts
+const RATE_LIMIT = {
+	limit: 3,
+	interval: 1e3
+};
 function makeHebits(cfg, options = {}) {
 	return new Hebits({
+		rateLimit: RATE_LIMIT,
 		...options,
 		cookie: () => readCookie(cfg.cookiePath) ?? ""
 	});
@@ -11194,11 +11199,19 @@ function makeLock() {
 //#region src/grab.ts
 const GB$3 = 1024 ** 3;
 var UserError = class extends Error {};
+const DAILY_CACHE_MS = 3e5;
 function makeGrabber({ cfg, store, hebits, qbit, log }) {
 	const withLock = makeLock();
-	async function daily() {
+	let cached = null;
+	async function daily({ fresh = false } = {}) {
+		if (!fresh && cached && Date.now() - cached.at < DAILY_CACHE_MS) return cached.value;
 		try {
-			return await hebits.dailyDownloads();
+			const value = await hebits.dailyDownloads();
+			cached = {
+				at: Date.now(),
+				value
+			};
+			return value;
 		} catch (e) {
 			log(`hebits daily downloads: ${e.message}`);
 			return {
@@ -11224,7 +11237,7 @@ function makeGrabber({ cfg, store, hebits, qbit, log }) {
 			let buf;
 			if (existsSync(file)) buf = readFileSync(file);
 			else {
-				const d = await daily();
+				const d = await daily({ fresh: true });
 				if (d.used >= d.limit) throw new UserError("daily download limit reached");
 				const free = await qbit.freeSpace();
 				if (meta.size && free !== void 0 && meta.size > free - cfg.minFreeGB * GB$3) throw new UserError("not enough disk space");
@@ -11243,6 +11256,7 @@ function makeGrabber({ cfg, store, hebits, qbit, log }) {
 				if (!parsed.private) throw new UserError("torrent is not private; refusing");
 				writeFileSync(file, buf, { mode: 384 });
 				store.recordGrab(hebitsId);
+				cached = null;
 				log(`grabbed hebits ${hebitsId} (${meta.title}) into ${category}`);
 			}
 			const t = readTorrent(buf);
@@ -12073,12 +12087,21 @@ function makeAddon({ cfg, store, hebits, qbit, home, covers, daily, version, log
 				return 0;
 			};
 			const top = Math.min(30, Math.max(1, ...[...byId.values()].map(seasonOf)) + 1);
-			(await Promise.all(Array.from({ length: top }, (_, i) => bySeason(i + 1).catch(() => [])))).forEach(collect);
+			(await Promise.all(Array.from({ length: top }, (_, i) => bySeason(i + 1).catch((e) => {
+				log(`find ${type} "${name}" season ${i + 1}: ${e instanceof Error ? e.message : String(e)}`);
+				return [];
+			})))).forEach(collect);
 		}
 		return [...byId.values()];
 	}
 	async function handleFindMeta(type, ref, baseUrl) {
-		const items = await findItems(ref.name, type, { allSeasons: true });
+		let items;
+		try {
+			items = await findItems(ref.name, type, { allSeasons: true });
+		} catch (err) {
+			searchFailed(type, ref.name, err);
+			return null;
+		}
 		if (!items.length) return null;
 		const imdb = items.find((it) => it.imdb)?.imdb;
 		const extra = imdb ? await cinemeta(type, imdb) : void 0;

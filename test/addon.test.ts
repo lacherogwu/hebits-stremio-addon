@@ -111,7 +111,9 @@ class RecordingResponse implements PosterResponse {
 }
 
 interface HarnessOptions {
-  tracker?: HebitsTorrent[] | (() => never);
+  // A function stands in for a tracker that behaves differently per query - one season
+  // failing while the rest answer, say. It receives the BrowseOptions the addon sent.
+  tracker?: HebitsTorrent[] | ((options: BrowseOptions) => HebitsTorrent[]);
   entries?: HomeEntry[];
   torrents?: Record<string, TorrentEntry>;
   daily?: { used: number; limit: number };
@@ -129,6 +131,7 @@ function harness({
 }: HarnessOptions = {}) {
   const browsed: BrowseOptions[] = [];
   const fetched: string[] = [];
+  const logs: string[] = [];
   const logins: { ok: boolean; error?: string }[] = [];
   const covers = new CoverCache();
 
@@ -169,7 +172,7 @@ function harness({
     hebits: {
       async browse(options = {}) {
         browsed.push(options);
-        if (typeof tracker === 'function') return tracker();
+        if (typeof tracker === 'function') return tracker(options);
         return tracker;
       },
     },
@@ -178,7 +181,9 @@ function harness({
     covers,
     daily: async () => daily,
     version: '2.0.0',
-    log() {},
+    log(message) {
+      logs.push(message);
+    },
     noteLogin(ok, error) {
       logins.push({ ok, error });
     },
@@ -190,7 +195,7 @@ function harness({
       return make ? make() : new Response('nope', { status: 404 });
     },
   };
-  return { addon: makeAddon(deps), browsed, fetched, logins, covers };
+  return { addon: makeAddon(deps), browsed, fetched, logins, logs, covers };
 }
 
 // Named element access, so no fixture lookup needs a non-null assertion.
@@ -369,6 +374,54 @@ test('every id this module emits parses back to the same parts', async () => {
     const encoded = encodeURIComponent(id);
     expect(parseHebitsId(encoded) ?? parseFindId(encoded)).toEqual(parseHebitsId(id) ?? parseFindId(id));
   }
+});
+
+// handleFindMeta was the only tracker-touching handler with no catch: a tracker failure
+// there propagated to the route as a 500 and never reached searchFailed(), so the health
+// state never flipped and the owner got no alert from the one call that failed. Every
+// sibling (handleStream, handleSearchCatalog, handleFindStream) already behaved this way.
+test('a tracker failure during a find card is an alert and a 404, not an unhandled 500', async () => {
+  const { addon, logins } = harness({
+    tracker: () => {
+      throw new Error('login expired');
+    },
+  });
+
+  await expect(addon.handleFindMeta('series', { name: 'Show Name' }, BASE)).resolves.toBeNull();
+  // The post-state that matters: the alert path ran. Without it the health tracker never
+  // hears about the failure, so /status still reads "ok" and no notification is sent.
+  expect(logins).toEqual([{ ok: false, error: 'Hebits search: login expired' }]);
+});
+
+// The positive control: a card whose tracker calls succeed is still built, so the catch
+// above cannot be satisfied by a handler that returns null for everything.
+test('control: a find card with a working tracker still comes back', async () => {
+  const { addon, logins } = harness();
+  const found = await addon.handleFindMeta('series', { name: 'Show Name' }, BASE);
+  expect(found?.name).toBe('Show Name');
+  expect(logins).toEqual([{ ok: true, error: undefined }]);
+});
+
+// The season fan-out catches per season so one bad query cannot lose the card - but a
+// silent [] turns "the tracker asked us to slow down" (hebits-client's RateLimitedError)
+// into "that season has no uploads": a partial card that looks complete, with nothing in
+// the log. The fan-out only fires when the first page comes back full (PAGE_SIZE), so
+// this fixture fills it.
+test('a season query that fails is logged, and the rest of the card survives', async () => {
+  const filler = Array.from({ length: 60 }, (_, i) => torrent(200 + i, `Big Show.S0${(i % 9) + 1}E0${(i % 9) + 1}.1080p.WEB-DL.x264-GRP`));
+  const { addon, logs, browsed } = harness({
+    tracker: (options) => {
+      if (options.season === 2) throw new Error('Hebits asked us to slow down');
+      return options.season === 3 ? [torrent(999, 'Big Show.S03E01.1080p.WEB-DL.x264-GRP')] : filler;
+    },
+  });
+
+  const found = await addon.handleFindMeta('series', { name: 'Big Show' }, BASE);
+
+  expect(browsed.some((b) => b.season === 2)).toBe(true); // the failing season really was asked for
+  expect(logs.some((m) => m.includes('season 2') && m.includes('slow down'))).toBe(true);
+  // Season 3's own upload is still on the card: one failed query costs that season, not the rest.
+  expect((found?.videos ?? []).some((v) => v.season === 3 && v.episode === 1)).toBe(true);
 });
 
 // --- the poster route -----------------------------------------------------------------

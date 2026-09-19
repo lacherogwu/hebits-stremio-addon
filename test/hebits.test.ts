@@ -86,3 +86,29 @@ test('a cookie rotated after construction is carried on the next request, with n
 
   expect(sentCookies).toEqual(['session=old', 'session=new']);
 });
+
+// The rate limit is production behaviour, not a detail of the client: hebits-client's
+// default is one request every two seconds ("Nothing here is latency-sensitive" - true for
+// the sibling builder service it was written for, false for a TV waiting on a stream
+// list), and makeHebits passing nothing meant a measured 6.0 s for an ordinary stream list
+// and 22-62 s for a find card. Both bounds below are load-bearing: the upper one fails if
+// the client default comes back (four calls would take six seconds), the lower one fails
+// if the throttle is dropped altogether, which is the failure that could get the account
+// banned. checkLogin() is used because it bypasses the response cache, so each call really
+// goes out.
+test('makeHebits throttles the tracker itself: several calls per second, never unbounded', async () => {
+  const cookiePath = join(mkdtempSync(join(tmpdir(), 'hebits-cookie-')), 'cookie.txt');
+  writeFileSync(cookiePath, 'session=x\n');
+  const hebits = makeHebits({ cookiePath });
+
+  // Sequentially: hebits-client collapses identical requests that overlap in flight (its
+  // own single-flight property), so four concurrent checkLogin() calls would be one
+  // request and time nothing.
+  const started = Date.now();
+  for (let i = 0; i < 4; i++) await hebits.checkLogin();
+  const elapsed = Date.now() - started;
+
+  expect(sentCookies.length).toBe(4); // four real requests, not one collapsed call
+  expect(elapsed).toBeGreaterThanOrEqual(900); // the fourth waited for the next window
+  expect(elapsed).toBeLessThan(2_000); // ...but nothing like the client's 1-per-2s default
+});
