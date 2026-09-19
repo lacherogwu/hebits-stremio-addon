@@ -148,6 +148,45 @@ test('malformed JSON in config.json is moved aside, not silently destroyed', asy
   expect(cfg?.configIssues.some((m) => m.includes(badFile as string))).toBe(true);
 });
 
+// A typo is the expected way config.json breaks (it's hand-edited), so rotating the token
+// on every one of them is a real, frequent cost: every installed Stremio/Nuvio client's URL
+// dies until the operator notices, finds the .bad- file, fixes the comma, and restores it -
+// painful to redo on a TV client. Salvaging a shape-valid token out of the unparseable text
+// turns a typo into "service keeps running, clients keep working" instead.
+test('malformed config.json with a shape-valid token keeps that token, unchanged, in the fresh file', async () => {
+  const validToken = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4'; // 32 lowercase hex chars - loadConfig()'s own shape
+  const original = `{ "port": 7001, "token": "${validToken}"`; // truncated: still unparseable
+  writeFileSync(join(dir, 'config.json'), original);
+  const { loadConfig, CONFIG_DIR } = await import('../src/config');
+  const cfg = loadConfig();
+
+  expect(cfg.token).toBe(validToken);
+  const rewritten = JSON.parse(readFileSync(join(CONFIG_DIR, 'config.json'), 'utf8'));
+  expect(rewritten.token).toBe(validToken);
+
+  // Still moved aside, still byte-identical - the salvage doesn't change that half at all.
+  const badFile = readdirSync(CONFIG_DIR).find((f) => f.startsWith('config.json.bad-'));
+  expect(badFile).toBeTruthy();
+  expect(readFileSync(join(CONFIG_DIR, badFile as string), 'utf8')).toBe(original);
+  expect(cfg.configIssues.some((m) => m.includes('kept its token'))).toBe(true);
+});
+
+test('malformed config.json with no token-shaped value gets a fresh token, original still preserved', async () => {
+  const original = '{ "port": 7001, "token": "not-a-hex-token"'; // truncated, and not 32 hex chars
+  writeFileSync(join(dir, 'config.json'), original);
+  const { loadConfig, CONFIG_DIR } = await import('../src/config');
+  const cfg = loadConfig();
+
+  expect(cfg.token).toBeTruthy();
+  expect(cfg.token).not.toBe('not-a-hex-token');
+  expect(cfg.token).toMatch(/^[0-9a-f]{32}$/);
+
+  const badFile = readdirSync(CONFIG_DIR).find((f) => f.startsWith('config.json.bad-'));
+  expect(badFile).toBeTruthy();
+  expect(readFileSync(join(CONFIG_DIR, badFile as string), 'utf8')).toBe(original);
+  expect(cfg.configIssues.some((m) => m.includes('kept its token'))).toBe(false);
+});
+
 test('a config.json that cannot even be moved aside runs from in-memory defaults, file untouched', async () => {
   const original = '{ this is not valid json';
   const cfgPath = join(dir, 'config.json');

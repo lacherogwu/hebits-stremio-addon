@@ -95,6 +95,27 @@ function logIssue(msg: string, issues: string[]): void {
   issues.push(msg);
 }
 
+// Every token this module has ever generated is randomBytes(16).toString('hex') - 32
+// lowercase hex characters. Accepting only that exact shape out of unparseable text is
+// deliberate: this value flows straight into the URL guard (tokenOk() in server.ts), so a
+// loosely-shaped "close enough" match would leave the service running with a token the
+// operator can't know and can't discover from config.json (it's gone, moved aside). Better
+// to fall through to a normal fresh token than to trust a garbled one.
+const TOKEN_SHAPE = /^[0-9a-f]{32}$/;
+
+// Bounded on purpose: a single regex over the raw (unparseable) text, never an attempt to
+// repair or partially parse the rest of the file. Used only when JSON.parse has already
+// failed - see loadConfig(). A malformed config.json is the expected failure mode here (the
+// file is hand-edited), and without this, every typo would rotate the token and break every
+// already-installed Stremio/Nuvio client's URL until the operator notices and restores the
+// file - on a TV client, painful. Salvaging the token turns that into: service keeps
+// running, clients keep working, operator fixes the typo at leisure.
+function salvageToken(rawText: string): string | undefined {
+  const match = rawText.match(/"token"\s*:\s*"([^"]*)"/);
+  const candidate = match?.[1];
+  return candidate !== undefined && TOKEN_SHAPE.test(candidate) ? candidate : undefined;
+}
+
 // One scalar top-level field. Returns the validated value, or undefined to fall back to
 // DEFAULTS (the caller deletes the key so the DEFAULTS spread supplies it).
 function validateScalar(key: string, schema: z.ZodType, fallback: unknown, received: unknown, issues: string[]): unknown {
@@ -150,14 +171,25 @@ export function loadConfig(): Config {
   // already-installed Stremio/Nuvio client - a typo silently costing the operator their
   // whole config and every client's URL. So move the broken file aside first; the
   // operator recovers by fixing the one bad character and restoring it.
+  // Set once the broken file has been moved aside, so a salvaged token doesn't skip the
+  // write below - config.json needs to exist again either way, and "token was already
+  // truthy from salvage" is not the same signal as "nothing needs writing".
+  let justRecovered = false;
   if (existsSync(CONFIG_FILE)) {
+    const raw = readFileSync(CONFIG_FILE, 'utf8');
     try {
-      saved = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+      saved = JSON.parse(raw);
     } catch (e) {
       const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
+      const salvaged = salvageToken(raw);
+      if (salvaged) saved.token = salvaged;
       try {
         renameSync(CONFIG_FILE, badPath);
-        logIssue(`config.json could not be parsed (${(e as Error).message}) - the original was moved to ${badPath}; starting from defaults`, configIssues);
+        justRecovered = true;
+        logIssue(
+          `config.json could not be parsed (${(e as Error).message}) - the original was moved to ${badPath}; starting from defaults${salvaged ? ', kept its token so existing clients keep working' : ''}`,
+          configIssues,
+        );
       } catch (renameError) {
         // Couldn't even move it aside (e.g. the config dir isn't writable) - leave the
         // file exactly as it is and run this process from in-memory defaults only. Do
@@ -171,10 +203,17 @@ export function loadConfig(): Config {
     }
   }
   let token = saved.token as string | undefined;
+  let tokenWasGenerated = false;
   if (!token) {
     token = randomBytes(16).toString('hex');
     saved.token = token;
-    if (canWrite) writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
+    tokenWasGenerated = true;
+  }
+  // Write whenever a fresh token was generated (original behaviour), or whenever the file
+  // on disk was just moved aside and needs replacing - even when the token itself was
+  // salvaged rather than generated, config.json still doesn't exist on disk any more.
+  if (canWrite && (tokenWasGenerated || justRecovered)) {
+    writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
   }
 
   // Unknown keys (not in DEFAULTS) start here and are never touched below, so they survive

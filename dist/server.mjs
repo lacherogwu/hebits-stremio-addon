@@ -10600,6 +10600,11 @@ function logIssue(msg, issues) {
 	console.error(`config: ${msg}`);
 	issues.push(msg);
 }
+const TOKEN_SHAPE = /^[0-9a-f]{32}$/;
+function salvageToken(rawText) {
+	const candidate = rawText.match(/"token"\s*:\s*"([^"]*)"/)?.[1];
+	return candidate !== void 0 && TOKEN_SHAPE.test(candidate) ? candidate : void 0;
+}
 function validateScalar(key, schema, fallback, received, issues) {
 	const result = schema.safeParse(received);
 	if (result.success) return result.data;
@@ -10628,24 +10633,33 @@ function loadConfig() {
 	const configIssues = [];
 	let saved = {};
 	let canWrite = true;
-	if (existsSync(CONFIG_FILE)) try {
-		saved = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
-	} catch (e) {
-		const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
+	let justRecovered = false;
+	if (existsSync(CONFIG_FILE)) {
+		const raw = readFileSync(CONFIG_FILE, "utf8");
 		try {
-			renameSync(CONFIG_FILE, badPath);
-			logIssue(`config.json could not be parsed (${e.message}) - the original was moved to ${badPath}; starting from defaults`, configIssues);
-		} catch (renameError) {
-			canWrite = false;
-			logIssue(`config.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running from in-memory defaults only, config.json left untouched`, configIssues);
+			saved = JSON.parse(raw);
+		} catch (e) {
+			const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
+			const salvaged = salvageToken(raw);
+			if (salvaged) saved.token = salvaged;
+			try {
+				renameSync(CONFIG_FILE, badPath);
+				justRecovered = true;
+				logIssue(`config.json could not be parsed (${e.message}) - the original was moved to ${badPath}; starting from defaults${salvaged ? ", kept its token so existing clients keep working" : ""}`, configIssues);
+			} catch (renameError) {
+				canWrite = false;
+				logIssue(`config.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running from in-memory defaults only, config.json left untouched`, configIssues);
+			}
 		}
 	}
 	let token = saved.token;
+	let tokenWasGenerated = false;
 	if (!token) {
 		token = randomBytes(16).toString("hex");
 		saved.token = token;
-		if (canWrite) writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 384 });
+		tokenWasGenerated = true;
 	}
+	if (canWrite && (tokenWasGenerated || justRecovered)) writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 384 });
 	const validated = { ...saved };
 	for (const [key, schema] of Object.entries(fieldSchemas)) {
 		if (!(key in saved)) continue;
