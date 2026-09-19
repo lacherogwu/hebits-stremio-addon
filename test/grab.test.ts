@@ -1,8 +1,9 @@
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { NotATorrentError, RateLimitedError } from 'hebits-client';
 import { expect, test } from 'vitest';
-import { type GrabConfig, type GrabHebits, type GrabQBit, makeGrabber } from '../src/grab';
+import { type GrabConfig, type GrabHebits, type GrabQBit, makeGrabber, UserError } from '../src/grab';
 import { Store } from '../src/store';
 
 // A one-file private torrent, bencoded by hand. Built in code on purpose: a .torrent from
@@ -139,4 +140,39 @@ test('a torrent that is not private is refused before anything is added', async 
   // Nothing is kept and nothing is recorded: the refusal is total.
   expect(existsSync(join(dir, 'hebits-555.torrent'))).toBe(false);
   expect(store.data.grabs).toEqual([]);
+});
+
+// hebits-client validates the bencode itself and throws NotATorrentError for the HTML
+// page Hebits serves when it refuses a download, so the readTorrent catch below it never
+// sees that case any more. Without the mapping it would reach the server as a 500
+// instead of the readable 409 the UserError path produces.
+test('a tracker refusal is a UserError (409), not an unhandled failure', async () => {
+  const { grabber, added, store } = harness({
+    hebits: {
+      async downloadTorrent() {
+        throw new NotATorrentError('response is not bencode: <!DOCTYPE html><title>Hebits</title>');
+      },
+    },
+  });
+  const err = await grabber.ensureTorrent('556', {}).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(UserError);
+  expect(String(err)).toContain('Hebits refused the download');
+  expect(added).toEqual([]);
+  expect(store.data.grabs).toEqual([]);
+});
+
+// The positive control for the test above: only that one error class becomes a 409. A
+// catch-all would turn every transport failure into "Hebits refused the download" and
+// report a broken tracker, a dead cookie or a bug as the user's problem.
+test('any other download failure keeps its own class, so it is still a 500', async () => {
+  const { grabber } = harness({
+    hebits: {
+      async downloadTorrent() {
+        throw new RateLimitedError('slow down');
+      },
+    },
+  });
+  const err = await grabber.ensureTorrent('557', {}).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(RateLimitedError);
+  expect(err).not.toBeInstanceOf(UserError);
 });

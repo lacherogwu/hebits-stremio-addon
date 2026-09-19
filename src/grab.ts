@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { NotATorrentError } from 'hebits-client';
 import { readTorrent, type Torrent } from './bencode';
 import { makeLock } from './lock';
 import type { DailyLimitConfig, Store, TorrentEntry } from './store';
@@ -94,7 +95,17 @@ export function makeGrabber({ cfg, store, hebits, qbit, log }: GrabDeps) {
         if (d.used >= d.limit) throw new UserError('daily download limit reached');
         const free = await qbit.freeSpace();
         if (meta.size && free !== undefined && meta.size > free - cfg.minFreeGB * GB) throw new UserError('not enough disk space');
-        buf = await hebits.downloadTorrent(Number(hebitsId));
+        try {
+          buf = await hebits.downloadTorrent(Number(hebitsId));
+        } catch (e) {
+          // Hebits serves an HTML page when it refuses a download. lib/grab.js met that
+          // as unparseable bencode in the readTorrent catch below and turned it into a
+          // UserError (a 409 with a readable message); hebits-client validates the
+          // bencode itself and throws first, so without this the same refusal would
+          // surface as a 500.
+          if (e instanceof NotATorrentError) throw new UserError(`Hebits refused the download: ${e.message}`);
+          throw e;
+        }
         let parsed: Torrent;
         try {
           parsed = readTorrent(buf);

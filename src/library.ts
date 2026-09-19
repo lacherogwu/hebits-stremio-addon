@@ -35,7 +35,10 @@ export interface CatalogMeta {
   id: string;
   type: string;
   name: string;
-  poster: string;
+  // `undefined` when the entry has neither an IMDb id nor a Hebits id: the poster route
+  // would have nothing to serve for it, so no poster url is emitted at all (see
+  // addon.ts's posterUrl). Matches SearchCatalogMeta, and JSON.stringify drops the key.
+  poster: string | undefined;
   posterShape: 'poster';
   description: string;
 }
@@ -52,7 +55,7 @@ export interface FullMeta {
   id: string;
   type: string;
   name: string;
-  poster: string;
+  poster: string | undefined;
   posterShape: 'poster';
   background?: string;
   logo?: string;
@@ -103,10 +106,13 @@ function displayName(entry: Pick<LibraryEntry, 'name'>): string {
   return `${showName(entry.name)}${res ? ` (${res})` : ''}`;
 }
 
-export function catalogMetas(
-  entries: LibraryEntry[],
+// Generic over the entry so a caller's richer entry (home.ts's HomeEntry carries the
+// hebitsId that addon.ts's posterUrl reads) reaches its own callback with its own type -
+// the same shape IdentityResolver.resolve uses.
+export function catalogMetas<T extends LibraryEntry>(
+  entries: T[],
   type: string,
-  { posterUrl }: { posterUrl: (e: LibraryEntry) => string },
+  { posterUrl }: { posterUrl: (e: T) => string | undefined },
 ): CatalogMeta[] {
   return entries
     .filter((e) => kindOf(e) === type)
@@ -122,9 +128,9 @@ export function catalogMetas(
 }
 
 // `extra` is Cinemeta's meta for the IMDb id when known (description, background, ...).
-export function metaFor(
-  entry: LibraryEntry,
-  { posterUrl, extra }: { posterUrl: (e: LibraryEntry) => string; extra?: CinemetaExtra },
+export function metaFor<T extends LibraryEntry>(
+  entry: T,
+  { posterUrl, extra }: { posterUrl: (e: T) => string | undefined; extra?: CinemetaExtra },
 ): FullMeta {
   const type = kindOf(entry);
   const meta: FullMeta = {
