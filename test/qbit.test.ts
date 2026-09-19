@@ -44,6 +44,35 @@ test('a 403 on export logs in and retries, still returning a Buffer', async () =
   expect(calls[2]).toMatch(/torrents\/export\?hash=ABC$/);
 });
 
+test('a 403 triggers exactly one re-login, and a persistent 403 afterward is not retried again', async () => {
+  const q = new QBit({ qbitUrl: 'http://x', qbitUsername: 'u', qbitPassword: 'p' });
+  const calls: string[] = [];
+  const cookiesSeen: (string | undefined)[] = [];
+  vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes('/auth/login')) {
+      return { ok: true, status: 200, headers: { getSetCookie: () => ['SID=abc123; Path=/'] } };
+    }
+    cookiesSeen.push((init?.headers as Record<string, string> | undefined)?.cookie);
+    // Every real request 403s, even the retry — which genuinely carries the session
+    // cookie login() just issued (asserted below via cookiesSeen). This models an
+    // invalid/expired-account case a re-login can't fix. Gating success on the mere
+    // *count* of prior calls (as the export-based test above does) can't tell a
+    // correctly-bounded client from an unbounded one: with that mock both only ever
+    // need one retry to succeed, so a client that dropped the `retry: false` bound and
+    // kept retrying forever would still pass. Persisting the 403 regardless of the
+    // (valid) cookie is what forces a bounded client to give up and an unbounded one to
+    // recurse forever.
+    return { ok: false, status: 403 };
+  });
+  await expect(q.torrent('abc')).rejects.toThrow('HTTP 403');
+  // The retry did carry the session the re-login obtained ...
+  expect(cookiesSeen).toEqual([undefined, 'SID=abc123']);
+  // ... but the client gave up after exactly one re-login, not more.
+  expect(calls.filter((c) => c.includes('auth/login')).length).toBe(1);
+});
+
 test('addTags sends a comma-joined list and skips an empty one', async () => {
   const q = new QBit({ qbitUrl: 'http://x' });
   const bodies: string[] = [];
