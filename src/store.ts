@@ -107,6 +107,23 @@ export class Store {
         const parsed: unknown = JSON.parse(readFileSync(this.file, 'utf8'));
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
           throw new Error(`it holds a JSON ${jsonKind(parsed)}, not an object`);
+        // An object is not yet a state file. Both required keys are load-bearing and
+        // neither failure shows up where it happened: a missing (or non-array) `grabs`
+        // throws out of grabsToday(), which daily() only reaches once Hebits' own counter
+        // is unreachable - so every stream list AND /status 500 at the exact moment the
+        // addon is already degraded, and /status is the page you'd open to find out why. A
+        // missing (or non-object) `torrents` throws out of store.torrent() on every /play,
+        // with the tracker perfectly healthy. Both take the corrupt-file path below rather
+        // than being patched up in place: the file is moved aside intact and the
+        // constructor's documented fallback ({ grabs: [], torrents: {} }) - the same one a
+        // file that fails to parse gets - is what runs.
+        const { grabs, torrents } = parsed as Partial<StoreData>;
+        if (!Array.isArray(grabs))
+          throw new Error(grabs === undefined ? 'it has no "grabs" array' : `its "grabs" is a JSON ${jsonKind(grabs)}, not an array`);
+        if (typeof torrents !== 'object' || torrents === null || Array.isArray(torrents))
+          throw new Error(
+            torrents === undefined ? 'it has no "torrents" object' : `its "torrents" is a JSON ${jsonKind(torrents)}, not an object`,
+          );
         this.data = parsed as StoreData;
       } catch (e) {
         const badPath = `${this.file}.bad-${Date.now()}`;

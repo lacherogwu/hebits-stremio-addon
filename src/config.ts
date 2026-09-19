@@ -313,7 +313,22 @@ export function loadConfig(): Config {
       }
     }
   }
-  let token = saved.token as string | undefined;
+  // `token` gets the same treatment as every other field: a hand-edited typo must not stop
+  // the service. It was the one field exempted, and the exemption was total - a truthy
+  // non-string is passed straight to tokenOk()'s Buffer.from() in server.ts, which throws
+  // ERR_INVALID_ARG_TYPE on EVERY route (a JSON array doesn't even throw: Buffer.from(['ab'])
+  // succeeds, so every URL simply 404s). Worse, a truthy value means the block below never
+  // rewrites config.json, so the service stays dead across restarts and /cookie - the page
+  // that exists to recover a broken addon from a browser - is dead with it. The operator's
+  // only way out is hand-editing JSON on the target. Falling back to a fresh token rotates
+  // the URL, which is painful on a TV, but it leaves a service that answers and a
+  // configIssues line on /status saying why.
+  if (saved.token !== undefined && typeof saved.token !== 'string')
+    logIssue(
+      `"token" is a ${typeOf(saved.token)}, not a string - a fresh token was generated, so every client's URL changed`,
+      configIssues,
+    );
+  let token = typeof saved.token === 'string' ? saved.token : undefined;
   let tokenWasGenerated = false;
   if (!token) {
     token = randomBytes(16).toString('hex');

@@ -175,3 +175,93 @@ for (const [label, body] of [
     expect(store?.loadIssue).toBe(logs[0]);
   });
 }
+
+// The same class of hole one level in: these all parse, and all are objects, so every
+// guard above passes them through - and then the missing key throws from wherever it is
+// first touched. `grabs` throws out of grabsToday(), which is only reached once Hebits'
+// own counter is unreachable (so: every stream list and /status 500 at the exact moment
+// the addon is already degraded); `torrents` throws out of store.torrent() on every
+// /play, with the tracker healthy.
+for (const [label, body, expected] of [
+  ['no "grabs" key', '{"torrents":{}}', /no "grabs" array/],
+  ['no "torrents" key', '{"grabs":[]}', /no "torrents" object/],
+  ['a "grabs" object instead of an array', '{"grabs":{},"torrents":{}}', /"grabs" is a JSON object/],
+  ['a "torrents" array instead of an object', '{"grabs":[],"torrents":[]}', /"torrents" is a JSON array/],
+] as const) {
+  test(`a state.json with ${label} is moved aside and falls back to an empty store`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'store-'));
+    const file = join(dir, 'state.json');
+    writeFileSync(file, body);
+    const logs: string[] = [];
+
+    let store: Store | undefined;
+    expect(() => {
+      store = new Store(dir, 'UTC', (m) => logs.push(m));
+    }).not.toThrow();
+
+    // The post-state, not just that a guard fired: both statements below are the ones
+    // that threw, run here against the recovered store.
+    expect(store?.data).toEqual({ grabs: [], torrents: {} });
+    expect(() => (store as Store).grabsToday()).not.toThrow();
+    expect((store as Store).grabsToday()).toBe(0);
+    expect(() => (store as Store).torrent('12345')).not.toThrow();
+    expect((store as Store).torrent('12345')).toBeUndefined();
+
+    const badFile = readdirSync(dir).find((f) => f.startsWith('state.json.bad-'));
+    expect(badFile).toBeTruthy();
+    expect(readFileSync(join(dir, badFile as string), 'utf8')).toBe(body); // recoverable, not destroyed
+    expect(existsSync(file)).toBe(false);
+
+    expect(logs.length).toBe(1);
+    expect(logs[0]).toMatch(expected);
+    expect(store?.loadIssue).toBe(logs[0]);
+  });
+}
+
+// The negative control for the four above: a state file that carries both keys with the
+// right shapes is loaded as-is, not "recovered". Without this, a guard that rejected every
+// state.json would pass the whole file.
+test('a well-shaped state.json is loaded untouched, with no move-aside', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'store-'));
+  const file = join(dir, 'state.json');
+  const data = { grabs: [{ id: '12345', at: '2026-09-19T00:00:00.000Z' }], torrents: { '12345': { hash: 'abc' } } };
+  writeFileSync(file, JSON.stringify(data));
+  const store = new Store(dir, 'UTC');
+  expect(store.data).toEqual(data);
+  expect(store.loadIssue).toBeNull();
+  expect(readdirSync(dir).find((f) => f.startsWith('state.json.bad-'))).toBeUndefined();
+});
+
+// HAZARD (day scoping): grabsToday() is the fallback download counter - it is what daily()
+// reports when Hebits' own counter is unreachable. Counting every grab in the ledger (it
+// keeps a month) instead of today's would hold `used >= limit` permanently and refuse every
+// download with "daily limit reached", precisely when nobody can see the real number.
+test('grabsToday counts only today, not the whole month-long ledger', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'store-'));
+  const store = new Store(dir, 'UTC');
+  const now = new Date('2026-09-19T12:00:00.000Z');
+  store.data.grabs = [
+    { id: 'a', at: '2026-08-25T12:00:00.000Z' }, // weeks ago, still in the ledger
+    { id: 'b', at: '2026-09-18T23:59:59.000Z' }, // yesterday, one second before midnight
+    { id: 'c', at: '2026-09-19T00:00:00.000Z' }, // today, the first second
+    { id: 'd', at: '2026-09-19T12:00:00.000Z' }, // today
+  ];
+  expect(store.grabsToday(now)).toBe(2);
+  // A day with nothing grabbed in it reads as zero rather than as "everything so far".
+  expect(store.grabsToday(new Date('2026-09-20T12:00:00.000Z'))).toBe(0);
+});
+
+// The day boundary is the configured timezone's, not UTC's: the same instant belongs to a
+// different day in Asia/Jerusalem (UTC+3 in September), and the limit this feeds is the
+// tracker's, which rolls over on the tracker's clock.
+test('grabsToday scopes the day in the configured timezone, not UTC', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'store-'));
+  const grabs = [{ id: 'a', at: '2026-09-18T22:00:00.000Z' }]; // 01:00 on the 19th in Jerusalem
+  const utc = new Store(dir, 'UTC');
+  utc.data.grabs = grabs;
+  const jerusalem = new Store(dir, 'Asia/Jerusalem');
+  jerusalem.data.grabs = grabs;
+  const now = new Date('2026-09-19T12:00:00.000Z');
+  expect(utc.grabsToday(now)).toBe(0);
+  expect(jerusalem.grabsToday(now)).toBe(1);
+});

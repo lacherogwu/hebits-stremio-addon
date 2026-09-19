@@ -514,3 +514,49 @@ test('a config.json holding an array does not rotate the token on every load', a
   expect(first).toMatch(/^[0-9a-f]{32}$/);
   expect(second).toBe(first);
 });
+
+// `token` was the one field with no validation, and the exemption was total: a truthy
+// non-string reaches tokenOk()'s Buffer.from() in server.ts, which throws
+// ERR_INVALID_ARG_TYPE on every route - manifest, status, streams, playback and /cookie,
+// the page that exists to recover a broken addon from a browser. Because the value is
+// truthy, loadConfig() never rewrote config.json either, so it survived every restart with
+// no way back in band. The fallback rotates the token (painful on a TV) but leaves a
+// service that answers and says why on /status.
+for (const [label, value, shown] of [
+  ['a number', 12345, 'number'],
+  ['a boolean', true, 'boolean'],
+  ['an object', { a: 1 }, 'object'],
+  // The array is the quiet one: Buffer.from(['ab']) succeeds, so nothing throws and every
+  // URL simply 404s - a service that looks alive and answers nothing.
+  ['an array', ['ab'], 'array'],
+] as const) {
+  test(`a "token" that is ${label} falls back to a fresh one and says so`, async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ token: value, dailyLimit: 7 }));
+    const { loadConfig } = await import('../src/config');
+    const cfg = loadConfig();
+
+    // The post-state: a usable token of the shape this module mints, not merely "no throw".
+    expect(typeof cfg.token).toBe('string');
+    expect(cfg.token).toMatch(/^[0-9a-f]{32}$/);
+    expect(cfg.configIssues.some((m) => m.includes(`"token" is a ${shown}`))).toBe(true);
+    // Every other setting in the file is honoured: this is one bad field, not a bad file.
+    expect(cfg.dailyLimit).toBe(7);
+
+    // Recovery is in band: config.json now holds the fresh token, so the next restart
+    // keeps it and the operator never has to hand-edit JSON on the target.
+    const rewritten = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) as { token?: unknown; dailyLimit?: number };
+    expect(rewritten.token).toBe(cfg.token);
+    expect(rewritten.dailyLimit).toBe(7);
+    expect(loadConfig().token).toBe(cfg.token);
+  });
+}
+
+// The negative control: an operator's own hand-written token is a perfectly good string
+// and must not be rotated by the check above just because it isn't 32 hex characters.
+test('a hand-written string token is kept as it is, with no issue raised', async () => {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ token: 'my-own-secret' }));
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+  expect(cfg.token).toBe('my-own-secret');
+  expect(cfg.configIssues).toEqual([]);
+});
