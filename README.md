@@ -99,7 +99,7 @@ on one machine or two, and the division is worth being precise about:
 Build it:
 
 ```bash
-git clone <this repo>
+git clone https://github.com/lacherogwu/hebits-stremio-addon.git
 cd hebits-stremio-addon
 npm install
 npm run build        # writes dist/server.mjs
