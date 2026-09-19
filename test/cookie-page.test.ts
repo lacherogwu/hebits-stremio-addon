@@ -32,12 +32,14 @@ function res(): CookiePageRes & { statusCode: number; body: string } {
 // Fakes only - nothing here touches the network or the filesystem. `checkLogin` and
 // `writeCookie` are the two collaborators the tests care about; everything else is a
 // harmless default so the dependency list stays complete without every test restating it.
-function deps(over: { checkLogin?: (cookie: string) => Promise<void>; writeCookie?: (cookie: string) => void } = {}): CookiePageDeps {
+function deps(
+  over: { checkLogin?: (cookie: string) => Promise<void>; writeCookie?: (cookie: string) => void; log?: (message: string) => void } = {},
+): CookiePageDeps {
   const health: Health = { hebitsLogin: 'unknown', checkedAt: null, error: null };
   const checkLogin = over.checkLogin ?? (async () => {});
   return {
     health,
-    log: () => {},
+    log: over.log ?? (() => {}),
     hebits: (cookie: string) => ({ checkLogin: () => checkLogin(cookie) }),
     writeCookie: over.writeCookie ?? (() => {}),
     // A minimal stand-in for health.ts's real noteLogin: enough to prove handleCookiePage
@@ -90,6 +92,28 @@ test('the pasted value never appears in the response body on the success path ei
   const out = res();
   await handleCookiePage(reqWith('session=topsecret'), out, deps({ checkLogin: async () => {} }));
   expect(out.body).not.toContain('session=topsecret');
+});
+
+test('the pasted value never appears in a logged line on the failure path', async () => {
+  const logs: string[] = [];
+  await handleCookiePage(
+    reqWith('session=dead-and-secret'),
+    res(),
+    deps({
+      checkLogin: async () => {
+        throw new LoginExpiredError('not logged in');
+      },
+      log: (m) => logs.push(m),
+    }),
+  );
+  expect(logs.length).toBeGreaterThan(0); // the failure path does log something - just never the cookie
+  for (const line of logs) expect(line).not.toContain('session=dead-and-secret');
+});
+
+test('the pasted value never appears in a logged line on the success path', async () => {
+  const logs: string[] = [];
+  await handleCookiePage(reqWith('session=good-and-secret'), res(), deps({ checkLogin: async () => {}, log: (m) => logs.push(m) }));
+  for (const line of logs) expect(line).not.toContain('session=good-and-secret');
 });
 
 test('a successful save flips health to ok immediately, not on the next tick', async () => {
