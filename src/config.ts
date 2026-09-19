@@ -234,7 +234,25 @@ export function loadConfig(): Config {
     }
     if (raw !== undefined) {
       try {
-        saved = JSON.parse(raw);
+        // JSON.parse succeeding is not the same as getting a config back, and every guard
+        // in this function until now caught only a parse FAILURE. `null`, a number, a
+        // string and `true` all parse cleanly and then throw a TypeError on the very next
+        // statement (`saved.token`), and would throw again at `key in saved` and
+        // `'notify' in saved` - the `in` operator rejects primitives. That is the same
+        // silent KeepAlive restart loop as an unguarded parse, through a different door.
+        //
+        // An array is worse precisely because it does NOT throw: JSON.stringify drops a
+        // `token` property set on an array, so the file gets rewritten as the same array,
+        // a fresh token is generated, and it is lost again on every single restart. To the
+        // owner that looks like clients intermittently failing to authenticate - a
+        // networking fault, not a config one.
+        //
+        // None of these is a config, so they all take the corrupt-file path below rather
+        // than getting a recovery mechanism of their own.
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+          throw new Error(`it holds a JSON ${typeOf(parsed)}, not an object of settings`);
+        saved = parsed as Record<string, unknown>;
       } catch (e) {
         const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
         const salvaged = salvageToken(raw);
@@ -243,7 +261,7 @@ export function loadConfig(): Config {
           renameSync(CONFIG_FILE, badPath);
           justRecovered = true;
           logIssue(
-            `config.json could not be parsed (${(e as Error).message}) - the original was moved to ${badPath}; starting from defaults${salvaged.note}`,
+            `config.json could not be loaded (${(e as Error).message}) - the original was moved to ${badPath}; starting from defaults${salvaged.note}`,
             configIssues,
           );
         } catch (renameError) {
@@ -252,7 +270,7 @@ export function loadConfig(): Config {
           // NOT fall through to the write below.
           canWrite = false;
           logIssue(
-            `config.json could not be parsed (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running from in-memory defaults only, config.json left untouched`,
+            `config.json could not be loaded (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running from in-memory defaults only, config.json left untouched`,
             configIssues,
           );
         }

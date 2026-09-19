@@ -138,3 +138,40 @@ test('loadIssue is null when state.json is absent, and when it loads cleanly', (
   writeFileSync(join(dir, 'state.json'), JSON.stringify({ grabs: [], torrents: {} }));
   expect(new Store(dir, 'UTC').loadIssue).toBeNull();
 });
+
+// The same hole as config.ts's, one line further on: `null` and `42` parse cleanly, so the
+// constructor's catch never fires, and then server.ts's `store.data.notified ??= {}` throws
+// at module load - before the Notifier exists. An array parses too and silently loses every
+// property written to it.
+for (const [label, body] of [
+  ['null', 'null'],
+  ['a number', '42'],
+  ['an array', '[1,2]'],
+] as const) {
+  test(`a state.json holding ${label} is moved aside and falls back to an empty store`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'store-'));
+    const file = join(dir, 'state.json');
+    writeFileSync(file, body);
+    const logs: string[] = [];
+
+    let store: Store | undefined;
+    expect(() => {
+      store = new Store(dir, 'UTC', (m) => logs.push(m));
+    }).not.toThrow();
+
+    expect(store?.data).toEqual({ grabs: [], torrents: {} });
+    // The statement that actually threw: server.ts:33, run here against the recovered store.
+    expect(() => {
+      (store as Store).data.notified ??= {};
+    }).not.toThrow();
+
+    const badFile = readdirSync(dir).find((f) => f.startsWith('state.json.bad-'));
+    expect(badFile).toBeTruthy();
+    expect(readFileSync(join(dir, badFile as string), 'utf8')).toBe(body);
+    expect(existsSync(file)).toBe(false);
+
+    expect(logs.length).toBe(1);
+    expect(logs[0]).toMatch(/not an object/);
+    expect(store?.loadIssue).toBe(logs[0]);
+  });
+}

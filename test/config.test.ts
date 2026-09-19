@@ -390,3 +390,54 @@ test('a config.json that can be written but not read is not rewritten', async ()
   expect(cfg?.configIssues.some((m) => m.includes('could not be read'))).toBe(true);
   expect(cfg?.configIssues.some((m) => m.includes('could not be written'))).toBe(false);
 });
+
+// JSON.parse succeeding is not the same as getting a config back. Each of these parses
+// cleanly, so none of the guards above ever fires; `null`, a number, a string and `true`
+// then throw a TypeError at `saved.token` (and would throw again at the two `in` checks
+// further down), which is the silent KeepAlive restart loop again. They must all land in
+// the corrupt-file path that already exists.
+for (const [label, body] of [
+  ['null', 'null'],
+  ['a number', '42'],
+  ['a string', '"hello"'],
+  ['a boolean', 'true'],
+  ['an array', '[1,2]'],
+] as const) {
+  test(`config.json holding ${label} is moved aside, not left to throw at module load`, async () => {
+    const cfgPath = join(dir, 'config.json');
+    writeFileSync(cfgPath, body);
+    const { loadConfig, CONFIG_DIR } = await import('../src/config');
+    let cfg: ReturnType<typeof loadConfig> | undefined;
+    expect(() => {
+      cfg = loadConfig();
+    }).not.toThrow();
+
+    // Same post-state as any other unusable config.json: original preserved byte-identically
+    // under a timestamped name, a fresh usable file in its place, and a named issue.
+    const badFile = readdirSync(CONFIG_DIR).find((f) => f.startsWith('config.json.bad-'));
+    expect(badFile).toBeTruthy();
+    expect(readFileSync(join(CONFIG_DIR, badFile as string), 'utf8')).toBe(body);
+
+    const rewritten = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    expect(Array.isArray(rewritten)).toBe(false);
+    expect(typeof rewritten).toBe('object');
+    expect(rewritten.token).toBe(cfg?.token);
+    expect(cfg?.token).toMatch(/^[0-9a-f]{32}$/);
+    expect(cfg?.configIssues.some((m) => m.includes(badFile as string))).toBe(true);
+    expect(cfg?.configIssues.some((m) => m.includes('not an object of settings'))).toBe(true);
+  });
+}
+
+// The array case deserves its own pin, because it is the one that does NOT throw:
+// JSON.stringify drops a `token` property set on an array, so an unguarded run rewrites
+// config.json as the same array and mints a token that is lost again on the next restart -
+// which presents as clients intermittently failing to authenticate, i.e. as a network
+// fault. Two loads in a row is what tells a stable token from a rotating one.
+test('a config.json holding an array does not rotate the token on every load', async () => {
+  writeFileSync(join(dir, 'config.json'), '[1,2]');
+  const { loadConfig } = await import('../src/config');
+  const first = loadConfig().token;
+  const second = loadConfig().token;
+  expect(first).toMatch(/^[0-9a-f]{32}$/);
+  expect(second).toBe(first);
+});

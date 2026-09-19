@@ -10656,7 +10656,9 @@ function loadConfig() {
 			logIssue(`config.json exists but could not be read (${e.message}) - running from in-memory defaults only, config.json left untouched`, configIssues);
 		}
 		if (raw !== void 0) try {
-			saved = JSON.parse(raw);
+			const parsed = JSON.parse(raw);
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error(`it holds a JSON ${typeOf(parsed)}, not an object of settings`);
+			saved = parsed;
 		} catch (e) {
 			const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
 			const salvaged = salvageToken(raw);
@@ -10664,10 +10666,10 @@ function loadConfig() {
 			try {
 				renameSync(CONFIG_FILE, badPath);
 				justRecovered = true;
-				logIssue(`config.json could not be parsed (${e.message}) - the original was moved to ${badPath}; starting from defaults${salvaged.note}`, configIssues);
+				logIssue(`config.json could not be loaded (${e.message}) - the original was moved to ${badPath}; starting from defaults${salvaged.note}`, configIssues);
 			} catch (renameError) {
 				canWrite = false;
-				logIssue(`config.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running from in-memory defaults only, config.json left untouched`, configIssues);
+				logIssue(`config.json could not be loaded (${e.message}) and could not be moved aside (${renameError.message}) - running from in-memory defaults only, config.json left untouched`, configIssues);
 			}
 		}
 	}
@@ -12633,6 +12635,11 @@ var QBit = class {
 function dayKey(date, timezone) {
 	return new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(date);
 }
+function jsonKind(v) {
+	if (v === null) return "null";
+	if (Array.isArray(v)) return "array";
+	return typeof v;
+}
 var Store = class {
 	file;
 	timezone;
@@ -12649,14 +12656,16 @@ var Store = class {
 		};
 		this.loadIssue = null;
 		if (existsSync(this.file)) try {
-			this.data = JSON.parse(readFileSync(this.file, "utf8"));
+			const parsed = JSON.parse(readFileSync(this.file, "utf8"));
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error(`it holds a JSON ${jsonKind(parsed)}, not an object`);
+			this.data = parsed;
 		} catch (e) {
 			const badPath = `${this.file}.bad-${Date.now()}`;
 			try {
 				renameSync(this.file, badPath);
-				this.note(`store: state.json could not be parsed (${e.message}) - moved aside to ${badPath}; today's grab count starts over`);
+				this.note(`store: state.json could not be loaded (${e.message}) - moved aside to ${badPath}; today's grab count starts over`);
 			} catch (renameError) {
-				this.note(`store: state.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running with an empty in-memory store; state.json left untouched`);
+				this.note(`store: state.json could not be loaded (${e.message}) and could not be moved aside (${renameError.message}) - running with an empty in-memory store; state.json left untouched`);
 			}
 		}
 	}

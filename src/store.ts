@@ -58,6 +58,15 @@ export function dayKey(date: Date, timezone: string): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(date);
 }
 
+// What JSON.parse handed back, for the "not an object" message below. Mirrors config.ts's
+// typeOf(); duplicated rather than shared so store.ts keeps depending on nothing but
+// node:fs, node:path and its own types.
+function jsonKind(v: unknown): string {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'array';
+  return typeof v;
+}
+
 export class Store {
   file: string;
   timezone: string;
@@ -90,17 +99,25 @@ export class Store {
     this.loadIssue = null;
     if (existsSync(this.file)) {
       try {
-        this.data = JSON.parse(readFileSync(this.file, 'utf8')) as StoreData;
+        // A parse that succeeds is not a state file: `null` and `42` parse fine, so the
+        // catch below never fires, and then server.ts's `store.data.notified ??= {}`
+        // throws at module load - before the Notifier exists, which is the one thing this
+        // constructor's comment promises cannot happen. An array parses too and quietly
+        // loses every property written to it. All of them take the corrupt-file path.
+        const parsed: unknown = JSON.parse(readFileSync(this.file, 'utf8'));
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+          throw new Error(`it holds a JSON ${jsonKind(parsed)}, not an object`);
+        this.data = parsed as StoreData;
       } catch (e) {
         const badPath = `${this.file}.bad-${Date.now()}`;
         try {
           renameSync(this.file, badPath);
           this.note(
-            `store: state.json could not be parsed (${(e as Error).message}) - moved aside to ${badPath}; today's grab count starts over`,
+            `store: state.json could not be loaded (${(e as Error).message}) - moved aside to ${badPath}; today's grab count starts over`,
           );
         } catch (renameError) {
           this.note(
-            `store: state.json could not be parsed (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running with an empty in-memory store; state.json left untouched`,
+            `store: state.json could not be loaded (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running with an empty in-memory store; state.json left untouched`,
           );
         }
       }
