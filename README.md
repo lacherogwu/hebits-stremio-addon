@@ -30,13 +30,14 @@ is the only credential involved, and it is installed through the addon's own
 
 ## Catalogs
 
-The addon exposes four catalogs:
+The addon exposes four catalogs. The names below are exactly as they appear on screen,
+emoji included:
 
-- **Hebits at home** / **Hebits movies at home** — built from what's actually sitting in
+- **🏠 Hebits at home** / **🏠 Hebits movies at home** — built from what's actually sitting in
   qBittorrent right now (`src/home.ts`, `src/library.ts`), not from an external database.
   This is right even for shows whose IMDb/Cinemeta metadata is incomplete or missing. Both
   are searchable.
-- **Hebits series** / **Hebits movies** — searches all of Hebits and groups the uploads into
+- **🔎 Hebits series** / **🔎 Hebits movies** — searches all of Hebits and groups the uploads into
   one card per title (`src/search.ts`). Covers Israeli titles that IMDb/Cinemeta don't know
   about. Titles with a recovered IMDb id still get the usual details page.
 
@@ -64,11 +65,25 @@ The addon exposes four catalogs:
 
 ## Requirements
 
-**On the machine that runs the addon:** Node.js ≥ 22, and
-[qBittorrent](https://www.qbittorrent.org/) with the WebUI enabled. Nothing else — no
-indexer, no proxy, no `node_modules`.
+**On the target** — the machine that runs the addon:
 
-**To build and deploy it:** Node.js ≥ 22 and npm, on whatever machine you develop on.
+- **Node.js ≥ 22, installed at `~/Applications/node/bin/node`.** The LaunchAgent names that
+  path literally, so a Node installed anywhere else (Homebrew's `/opt/homebrew/bin/node`,
+  for instance) will not be found. Either install Node there or edit the path in
+  `deploy/org.user.hebits-addon.plist` before installing it — see
+  [When the deploy times out](#when-the-deploy-times-out) for what the failure looks like,
+  because it does not name this as the cause.
+- [qBittorrent](https://www.qbittorrent.org/) with the WebUI enabled.
+- For `npm run deploy` to reach it: an SSH server, and `rsync`, `curl` and `bash` on the
+  target.
+- A **bootstrapped `gui/$(id -u)` launchd domain**. This is the GUI session's domain, so it
+  does not exist on a Mac that has never had a console login (a headless server that has
+  only ever been reached over SSH). `launchctl bootstrap` fails there, and the fix is to log
+  in on the console once.
+
+Nothing else: no indexer, no proxy, no `node_modules`, and no npm on the target.
+
+**On the developer machine:** Node.js ≥ 22 and npm.
 
 ## Install
 
@@ -160,17 +175,60 @@ placeholders.
 
 Then re-run `npm run deploy`.
 
-The plist expects Node at `~/Applications/node/bin/node` and the bundle at
-`~/Applications/hebits-stremio-addon/dist/server.mjs`, and points launchd's stdout and
-stderr at `logFile`. It sets `KeepAlive`, so the service restarts on its own if it exits —
-which is why nothing on the startup path is allowed to throw (see
+The plist hard-codes three paths, all with `__HOME__` substituted at install time: Node at
+`~/Applications/node/bin/node`, the bundle at
+`~/Applications/hebits-stremio-addon/dist/server.mjs`, and launchd's stdout and stderr at
+`~/.config/hebits-stremio-addon/addon.log`. It sets `KeepAlive`, so the service restarts on
+its own if it exits — which is why nothing on the startup path is allowed to throw (see
 [When config.json is broken](#when-configjson-is-broken)).
+
+Two config keys are coupled to that plist, and changing either one alone breaks something
+quietly:
+
+- **`logFile`** must match the plist's `StandardOutPath`/`StandardErrorPath`. launchd holds
+  that file open for the life of the process, and the addon rotates the log by truncating
+  **that exact path in place** — the only method that works with a descriptor launchd owns.
+  Point `logFile` somewhere else and rotation silently stops applying to the file actually
+  being written, which then grows without bound. Change both or neither.
+- **`HEBITS_ADDON_DIR`** is read from the environment, and a launchd service does not
+  inherit your shell's. Setting it in a shell profile has no effect on the running addon;
+  it has to go in an `EnvironmentVariables` dict in the plist. Note that it also moves the
+  default `logFile`, so it runs into the point above as well.
+
+### Reading the token
+
+Both the manifest URL and the `/cookie` page need the `token` that the addon generated on
+the target at first run. Read it back over SSH:
+
+```bash
+ssh <ssh-host> '~/Applications/node/bin/node -p "require(process.env.HOME+\"/.config/hebits-stremio-addon/config.json\").token"'
+```
+
+The addon is then at `http://<target-host>:7000/<token>/manifest.json`, which is the URL to
+install in Stremio or Nuvio.
+
+### When the deploy times out
+
+`scripts/deploy.sh` ends with `✗ addon did not come up as v<version>` after about twenty
+seconds, and prints the last 20 log lines. It does not diagnose the cause, so the usual
+candidates, in the order worth checking:
+
+- **Node is not at `~/Applications/node/bin/node`.** The most common one on a fresh target,
+  and the least obvious: launchd cannot start a program that isn't there, so the log stays
+  empty and nothing explains why. See [Requirements](#requirements).
+- **The service started but reports a different version.** The deploy matches on the version
+  string *and* on the PID it just started, so this is a real mismatch, not a stale read.
+- **The addon exited on startup** — most likely the port is taken (see
+  [Install](#install)) or qBittorrent is unreachable. The printed log lines will say.
 
 ## Configuration
 
 Settings live in `~/.config/hebits-stremio-addon/config.json` (mode `600`), overriding the
-defaults in `src/config.ts`. Override the directory itself with the `HEBITS_ADDON_DIR`
-environment variable. See `deploy/config.example.json` for a starting point.
+defaults in `src/config.ts`. See `deploy/config.example.json` for a starting point.
+
+The directory itself is overridden with the `HEBITS_ADDON_DIR` environment variable — which
+for the deployed service means an `EnvironmentVariables` dict in the LaunchAgent plist, not
+a shell profile, since launchd does not pass your shell's environment to it.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -187,7 +245,7 @@ environment variable. See `deploy/config.example.json` for a starting point.
 | `watchPath` | `~/hebits/watch` | Save path for `watchCategory` |
 | `notify` | `{"webhookUrl": ""}` | Alert transport; see [Notifications](#notifications) |
 | `torrentDir` | `<config dir>/torrents` | Where downloaded `.torrent` files are cached; created on startup if missing |
-| `logFile` | `<config dir>/addon.log` | Truncated in place (with a `.1` backup) once it passes 20 MB |
+| `logFile` | `<config dir>/addon.log` | Truncated in place (with a `.1` backup) once it passes 20 MB. **Must match the LaunchAgent plist** — see [One-time LaunchAgent setup](#one-time-launchagent-setup) |
 
 `cookiePath` may point at a file shared with another service — `hebits-account-builder` uses
 the same cookie — but it defaults inside the config directory so the addon is self-contained.
@@ -304,10 +362,12 @@ client means implementing the same surface:
   each file's exact offset into the piece layout (pad files included).
 - Report free disk space.
 
-**uTorrent cannot be ported to**: its WebAPI exposes no piece-state endpoint, so there is no
-way to know which pieces are actually downloaded, and piece-gated streaming — the thing that
-lets an unfinished torrent be watched safely, without ever serving a byte that hasn't arrived
-— is not possible on it.
+**uTorrent is probably not portable to** — *unverified, and worth checking before trying.*
+Its WebAPI is not known to expose a piece-state endpoint, and without one there is no way to
+tell which pieces have actually arrived, so piece-gated streaming — the thing that lets an
+unfinished torrent be watched safely — would not be possible. This has not been tested
+against a current uTorrent build; it is the reason to check that endpoint first, not a
+measured result.
 
 ## Layout
 
@@ -356,10 +416,14 @@ only file deployed.
 ## Tests
 
 ```bash
-npm test          # vitest, 218 tests
+npm run check     # biome: format + lint + import order. The standard gate
 npm run typecheck # tsc
-npm run lint      # biome
+npm test          # vitest
 ```
+
+`npm run check` is the one to run before committing: `npm run lint` checks lint rules only,
+so formatting and import-order drift would pass it. `npm run format` writes formatting
+fixes.
 
 No network access required: the suite mocks qBittorrent and Hebits, and never touches a real
 torrent client or the tracker. `test/bundle.test.ts` additionally exercises the built
