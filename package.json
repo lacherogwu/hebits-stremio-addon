@@ -1,6 +1,6 @@
 {
   "name": "hebits-stremio-addon",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "A Stremio addon that streams Hebits torrents from your own qBittorrent, with no debrid service.",
   "license": "MIT",
   "type": "module",
