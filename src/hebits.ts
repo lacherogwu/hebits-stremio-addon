@@ -9,8 +9,8 @@ import { Hebits } from 'hebits-client';
 import { readCookie } from './config';
 
 // hebits-client's default throttle is one request every two seconds, and its doc comment
-// says why: "Nothing here is latency-sensitive." That is true of the sibling builder
-// service it was written for and false here - a TV is sitting in front of someone, waiting.
+// says why: "Nothing here is latency-sensitive." That is true of a background service and
+// false here - a TV is sitting in front of someone, waiting.
 // Measured through the shipped bundle against a local stub, on that default: 6.0 s for an
 // ordinary stream list, 22.0 s for a nine-season find card, 62.0 s at the 30-query
 // allSeasons fan-out cap. The Jackett setup this replaces issued those same queries with no
@@ -28,8 +28,8 @@ const RATE_LIMIT = { limit: 3, interval: 1000 };
 // The cookie MUST be a provider, never a string. hebits-client resolves a function before
 // every request, so a cookie pasted into /cookie while the service runs takes effect on
 // the next call. A string binds whatever readCookie() returned at startup: the /cookie
-// page then reports success while the running client keeps using the dead cookie — the
-// exact bug that shipped in the sibling service.
+// page then reports success while the running client keeps using the dead cookie — a bug
+// that has shipped in a service of this shape before.
 export function makeHebits(cfg: { cookiePath: string }, options: Omit<HebitsOptions, 'cookie'> = {}): Hebits {
   return new Hebits({ rateLimit: RATE_LIMIT, ...options, cookie: () => readCookie(cfg.cookiePath) ?? '' });
 }

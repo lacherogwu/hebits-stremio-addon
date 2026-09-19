@@ -148,7 +148,7 @@ export function makeGrabber({ cfg, store, hebits, qbit, log }: GrabDeps) {
       }
       store.putTorrent(hebitsId, { ...meta, hash: t.infoHash, name: t.name, files: t.files, pieceLength: t.pieceLength });
       for (let i = 0; i < 40 && !(await qbit.torrent(t.infoHash)); i++) await sleep(250);
-      // Identity for anything reading qBittorrent later, including the account builder.
+      // Identity for anything reading qBittorrent later, including this addon on a later run.
       await qbit.addTags(t.infoHash, buildTags({ hebitsId, imdb: meta.imdb })).catch((e: Error) => log(`tag ${hebitsId}: ${e.message}`));
       return store.torrent(hebitsId);
     });

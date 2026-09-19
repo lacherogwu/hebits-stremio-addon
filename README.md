@@ -10,11 +10,6 @@ your own [qBittorrent](https://www.qbittorrent.org/).
 blocked immediately. Nothing here proxies through TorBox, AIOStreams or similar — every
 torrent downloads, seeds and stays on the machine this addon runs on.
 
-This is one half of a split: the other half is `hebits-account-builder`, a separate service
-that builds up the Hebits account (auto-grab, auto-seed, auto-release) using the same
-qBittorrent instance. They don't talk to each other and neither depends on the other running
-— they share state only through tags written into qBittorrent (see [Tags](#tags) below).
-
 ```
  Stremio / Nuvio ──stream list──►  this addon :7000 ──cookie──► hebits.net
         │                              │
@@ -84,7 +79,7 @@ that runs it.
 ## Install
 
 The addon ships as **one bundled file**, `dist/server.mjs`. Building and running can happen
-on one machine or two, and the split is worth being precise about:
+on one machine or two, and the division is worth being precise about:
 
 - **Where you build** — needs `npm install`, and a build step to produce the bundle.
 - **Where it runs** — needs only `dist/server.mjs` and a Node runtime. No `node_modules`,
@@ -209,8 +204,18 @@ supervised service has to be handed explicitly — see
 | `torrentDir` | `<config dir>/torrents` | Where downloaded `.torrent` files are cached; created on startup if missing |
 | `logFile` | `<config dir>/addon.log` | Truncated in place (with a `.1` backup) once it passes 20 MB. **Whatever supervises the addon must send stdout and stderr to this same path** — see [Running it as a service](#running-it-as-a-service) |
 
-`cookiePath` may point at a file shared with another service — `hebits-account-builder` uses
-the same cookie — but it defaults inside the config directory so the addon is self-contained.
+**Why the `token` is random rather than empty.** There is no login here: the token *is* the
+authentication, and the addon listens on all interfaces. An empty token would not mean "no
+protection" — it would mean the guard compares two empty strings and passes, leaving every
+route open to anyone who can reach the port, including `/cookie`, where the Hebits session
+cookie is pasted and can be read back. Generating one on first run is safe by default with
+nothing to set up. It is then preserved across restarts, and across a corrupted `config.json`
+wherever it can be identified unambiguously, because rotating it breaks every URL already
+installed on a TV.
+
+`cookiePath` may point at a file shared with another service that logs in as the same Hebits
+account, so one paste serves both. It defaults inside the config directory, so the addon is
+self-contained unless you choose otherwise.
 
 ### When config.json is broken
 
@@ -304,9 +309,9 @@ Repeats of the same alert kind are suppressed for six hours.
 
 Every torrent this addon adds to qBittorrent gets tagged with what it knew when it grabbed
 it: `hebits:<id>` and, when known, `imdb:tt<id>`. A `.torrent` file itself carries neither of
-these — the tags are the only record. `hebits-account-builder` writes the exact same tags for
-torrents it adds, so either program can recognize torrents the other one added and tell what
-they are, without depending on each other running.
+these — the tags are the only record. The scheme is deliberately plain so that any other tool
+sharing the qBittorrent instance can read it, and so that a torrent added by hand in a browser
+can be recognized later. Nothing here requires such a tool to exist.
 
 ## Torrent-client contract
 
@@ -404,3 +409,16 @@ source clearly has.
   reordering settings or they may never load.
 - **Android TV apps can't resolve `.local` mDNS names.** Point them at this machine's fixed
   LAN IP address instead.
+
+## Related
+
+Independent projects, listed only because they may be useful — this addon requires none of
+them and does not talk to them:
+
+- [`hebits-client`](https://www.npmjs.com/package/hebits-client) — the Hebits API client this
+  addon is built on. Useful on its own.
+- [`hebits-account-builder`](https://github.com/lacherogwu/hebits-account-builder) — a
+  separate service that builds a ratio on the same tracker (auto-grab, auto-seed,
+  auto-release). If you run both against one qBittorrent, they will recognize each other's
+  torrents through the [tags](#tags) above, but neither needs the other to be installed or
+  running.

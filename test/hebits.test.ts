@@ -88,9 +88,9 @@ test('a cookie rotated after construction is carried on the next request, with n
 });
 
 // The rate limit is production behaviour, not a detail of the client: hebits-client's
-// default is one request every two seconds ("Nothing here is latency-sensitive" - true for
-// the sibling builder service it was written for, false for a TV waiting on a stream
-// list), and makeHebits passing nothing meant a measured 6.0 s for an ordinary stream list
+// default is one request every two seconds ("Nothing here is latency-sensitive" - true for a
+// background service, false for a TV waiting on a stream list), and makeHebits passing
+// nothing meant a measured 6.0 s for an ordinary stream list
 // and 22-62 s for a find card.
 //
 // Read the bounds below for what they are: this pins the CHOSEN value - 3 requests per
