@@ -10602,8 +10602,21 @@ function logIssue(msg, issues) {
 }
 const TOKEN_SHAPE = /^[0-9a-f]{32}$/;
 function salvageToken(rawText) {
-	const candidate = rawText.match(/"token"\s*:\s*"([^"]*)"/)?.[1];
-	return candidate !== void 0 && TOKEN_SHAPE.test(candidate) ? candidate : void 0;
+	const found = [];
+	const valid = [];
+	for (const match of rawText.matchAll(/"token"\s*:\s*"([^"]*)"/g)) {
+		const candidate = match[1] ?? "";
+		found.push(candidate);
+		if (TOKEN_SHAPE.test(candidate)) valid.push(candidate);
+	}
+	const only = valid[0];
+	if (valid.length === 1 && only !== void 0) return {
+		token: only,
+		note: ", kept its token so existing clients keep working"
+	};
+	if (valid.length > 1) return { note: `, and ${valid.length} token-shaped values were found in it so none could be trusted (a nested "token", e.g. a notify header, looks the same to a text search) - a fresh token was generated` };
+	if (found.length > 0) return { note: ", and the \"token\" in it is not the expected 32-character lowercase-hex shape - a fresh token was generated" };
+	return { note: "" };
 }
 function validateScalar(key, schema, fallback, received, issues) {
 	const result = schema.safeParse(received);
@@ -10635,17 +10648,23 @@ function loadConfig() {
 	let canWrite = true;
 	let justRecovered = false;
 	if (existsSync(CONFIG_FILE)) {
-		const raw = readFileSync(CONFIG_FILE, "utf8");
+		let raw;
 		try {
+			raw = readFileSync(CONFIG_FILE, "utf8");
+		} catch (e) {
+			canWrite = false;
+			logIssue(`config.json exists but could not be read (${e.message}) - running from in-memory defaults only, config.json left untouched`, configIssues);
+		}
+		if (raw !== void 0) try {
 			saved = JSON.parse(raw);
 		} catch (e) {
 			const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
 			const salvaged = salvageToken(raw);
-			if (salvaged) saved.token = salvaged;
+			if (salvaged.token) saved.token = salvaged.token;
 			try {
 				renameSync(CONFIG_FILE, badPath);
 				justRecovered = true;
-				logIssue(`config.json could not be parsed (${e.message}) - the original was moved to ${badPath}; starting from defaults${salvaged ? ", kept its token so existing clients keep working" : ""}`, configIssues);
+				logIssue(`config.json could not be parsed (${e.message}) - the original was moved to ${badPath}; starting from defaults${salvaged.note}`, configIssues);
 			} catch (renameError) {
 				canWrite = false;
 				logIssue(`config.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running from in-memory defaults only, config.json left untouched`, configIssues);
@@ -10659,7 +10678,11 @@ function loadConfig() {
 		saved.token = token;
 		tokenWasGenerated = true;
 	}
-	if (canWrite && (tokenWasGenerated || justRecovered)) writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 384 });
+	if (canWrite && (tokenWasGenerated || justRecovered)) try {
+		writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 384 });
+	} catch (e) {
+		logIssue(`config.json could not be written (${e.message}) - the addon is running with a token that exists only in memory, so it will change on the next restart; fix the permissions on ${CONFIG_DIR}`, configIssues);
+	}
 	const validated = { ...saved };
 	for (const [key, schema] of Object.entries(fieldSchemas)) {
 		if (!(key in saved)) continue;
@@ -12615,6 +12638,7 @@ var Store = class {
 	timezone;
 	log;
 	data;
+	loadIssue;
 	constructor(dir, timezone, log = () => {}) {
 		this.file = join(dir, "state.json");
 		this.timezone = timezone;
@@ -12623,17 +12647,22 @@ var Store = class {
 			grabs: [],
 			torrents: {}
 		};
+		this.loadIssue = null;
 		if (existsSync(this.file)) try {
 			this.data = JSON.parse(readFileSync(this.file, "utf8"));
 		} catch (e) {
 			const badPath = `${this.file}.bad-${Date.now()}`;
 			try {
 				renameSync(this.file, badPath);
-				this.log(`store: state.json could not be parsed (${e.message}) - moved aside to ${badPath}; today's grab count starts over`);
+				this.note(`store: state.json could not be parsed (${e.message}) - moved aside to ${badPath}; today's grab count starts over`);
 			} catch (renameError) {
-				this.log(`store: state.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running with an empty in-memory store; state.json left untouched`);
+				this.note(`store: state.json could not be parsed (${e.message}) and could not be moved aside (${renameError.message}) - running with an empty in-memory store; state.json left untouched`);
 			}
 		}
+	}
+	note(message) {
+		this.log(message);
+		this.loadIssue = message;
 	}
 	save() {
 		const tmp = `${this.file}.tmp`;
@@ -12927,7 +12956,8 @@ app.all("*", async (c) => {
 				health: {
 					...health,
 					logFile: LOG_FILE,
-					configIssues: cfg.configIssues
+					configIssues: cfg.configIssues,
+					storeIssue: store.loadIssue
 				},
 				freeGB: Math.round((await qbit.freeSpace() || 0) / GB)
 			});

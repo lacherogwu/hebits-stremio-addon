@@ -63,6 +63,15 @@ export class Store {
   timezone: string;
   log: (message: string) => void;
   data: StoreData;
+  // The constructor's load failure, if any, kept for /status to render beside
+  // configIssues. null when state.json loaded cleanly (or was simply absent).
+  //
+  // Worth surfacing rather than only logging: grab.ts's daily() falls back to
+  // grabsToday() exactly when Hebits' own counter is unreachable, so a wiped ledger means
+  // the day's count restarts at zero and the daily limit can be exceeded - which has real
+  // consequences on this tracker. The Notifier doesn't exist yet when this runs, so a line
+  // in addon.log would otherwise be the only trace.
+  loadIssue: string | null;
 
   // log: this is a cache and event log, not the source of truth (qBittorrent is), so a
   // failed save must never crash the process. It logs loudly instead and returns false.
@@ -78,6 +87,7 @@ export class Store {
     this.timezone = timezone;
     this.log = log;
     this.data = { grabs: [], torrents: {} };
+    this.loadIssue = null;
     if (existsSync(this.file)) {
       try {
         this.data = JSON.parse(readFileSync(this.file, 'utf8')) as StoreData;
@@ -85,14 +95,22 @@ export class Store {
         const badPath = `${this.file}.bad-${Date.now()}`;
         try {
           renameSync(this.file, badPath);
-          this.log(`store: state.json could not be parsed (${(e as Error).message}) - moved aside to ${badPath}; today's grab count starts over`);
+          this.note(
+            `store: state.json could not be parsed (${(e as Error).message}) - moved aside to ${badPath}; today's grab count starts over`,
+          );
         } catch (renameError) {
-          this.log(
+          this.note(
             `store: state.json could not be parsed (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running with an empty in-memory store; state.json left untouched`,
           );
         }
       }
     }
+  }
+
+  // Log it AND keep it: see loadIssue. Both callers are in the constructor.
+  private note(message: string): void {
+    this.log(message);
+    this.loadIssue = message;
   }
 
   save(): boolean {

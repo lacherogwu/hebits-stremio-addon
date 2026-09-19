@@ -99,6 +99,11 @@ test('malformed state.json is moved aside and construction falls back to an empt
   expect(logs.length).toBe(1);
   expect(logs[0]).toMatch(/moved aside/);
   expect(logs[0]).toContain(badFile);
+  // Kept, not just logged: /status renders this beside configIssues, because a reset
+  // ledger is what grab.ts's daily() falls back to when Hebits' own counter is
+  // unreachable - one line in addon.log is not enough trace for a limit that can be
+  // exceeded silently.
+  expect(store?.loadIssue).toBe(logs[0]);
 });
 
 test('a state.json that cannot even be moved aside runs from an empty in-memory store without touching the file', () => {
@@ -109,8 +114,8 @@ test('a state.json that cannot even be moved aside runs from an empty in-memory 
   chmodSync(dir, 0o500); // read+exec only: renameSync into/out of it fails with EACCES
   const logs: string[] = [];
 
+  let store: Store | undefined;
   try {
-    let store: Store | undefined;
     expect(() => {
       store = new Store(dir, 'UTC', (m) => logs.push(m));
     }).not.toThrow();
@@ -122,4 +127,14 @@ test('a state.json that cannot even be moved aside runs from an empty in-memory 
   expect(readFileSync(file, 'utf8')).toBe(original); // left exactly as it was
   expect(logs.length).toBe(1);
   expect(logs[0]).toMatch(/could not be moved aside/);
+  expect(store?.loadIssue).toBe(logs[0]);
+});
+
+// The negative: /status must not show a stale or invented store problem on a healthy run,
+// or the field is noise the operator learns to ignore.
+test('loadIssue is null when state.json is absent, and when it loads cleanly', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'store-'));
+  expect(new Store(dir, 'UTC').loadIssue).toBeNull();
+  writeFileSync(join(dir, 'state.json'), JSON.stringify({ grabs: [], torrents: {} }));
+  expect(new Store(dir, 'UTC').loadIssue).toBeNull();
 });

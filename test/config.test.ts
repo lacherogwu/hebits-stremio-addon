@@ -125,7 +125,8 @@ test('a bad nested notify field falls back while the rest of notify survives', a
 // a message mentioning "config.json" would have passed the old (too weak) version of this
 // test even while the bug was live.
 test('malformed JSON in config.json is moved aside, not silently destroyed', async () => {
-  const original = '{ "port": 7001, "qbitUsername": "alice", "notify": { "webhookUrl": "https://example.com/hook" }, "token": "original-token-value"';
+  const original =
+    '{ "port": 7001, "qbitUsername": "alice", "notify": { "webhookUrl": "https://example.com/hook" }, "token": "original-token-value"';
   writeFileSync(join(dir, 'config.json'), original);
   const { loadConfig, CONFIG_DIR } = await import('../src/config');
   let cfg: ReturnType<typeof loadConfig> | undefined;
@@ -185,6 +186,57 @@ test('malformed config.json with no token-shaped value gets a fresh token, origi
   expect(badFile).toBeTruthy();
   expect(readFileSync(join(CONFIG_DIR, badFile as string), 'utf8')).toBe(original);
   expect(cfg.configIssues.some((m) => m.includes('kept its token'))).toBe(false);
+  // A token was visibly in the file and did not survive - say why, or the operator is left
+  // with every client URL dead and no explanation anywhere.
+  expect(cfg.configIssues.some((m) => m.includes('not the expected 32-character lowercase-hex shape'))).toBe(true);
+});
+
+// salvageToken() runs a text search over a file that by definition doesn't parse, so it
+// cannot tell nesting depth: `notify.headers` is a supported place for an operator to put
+// an auth header literally named "token" (notify.ts reads headers/method/body/command),
+// and a non-global regex takes whichever `"token"` comes first in the text. That is the
+// whole hole - the shape check was never the weak part, position was. Here the nested one
+// comes first and is not token-shaped, so the operator's real token must still be the one
+// that survives.
+test('a nested notify.headers.token ahead of the real one does not displace it', async () => {
+  const realToken = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4';
+  const original = `{ "notify": { "webhookUrl": "https://example.com/hook", "headers": { "token": "Bearer not-hex-at-all" } }, "token": "${realToken}"`;
+  writeFileSync(join(dir, 'config.json'), original);
+  const { loadConfig, CONFIG_DIR } = await import('../src/config');
+  const cfg = loadConfig();
+
+  expect(cfg.token).toBe(realToken);
+  // Pin the post-state, not just the return value: this is what every installed client's
+  // URL is read from on the next restart.
+  const rewritten = JSON.parse(readFileSync(join(CONFIG_DIR, 'config.json'), 'utf8'));
+  expect(rewritten.token).toBe(realToken);
+  expect(cfg.configIssues.some((m) => m.includes('kept its token'))).toBe(true);
+});
+
+// The reported case: the nested header value IS 32 lowercase hex (an ordinary thing for a
+// webhook auth header to be), so shape cannot separate it from the real token. Adopting
+// either would be a guess, and the wrong guess silently hands the service's URL secret a
+// value copied from a header that may be shared with another system while reporting the
+// operator's token was kept. Two candidates must fall through to a fresh token.
+test('two token-shaped candidates produce a fresh token rather than a guess', async () => {
+  const headerToken = 'ffffffffffffffffffffffffffffffff';
+  const realToken = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4';
+  const original = `{ "notify": { "headers": { "token": "${headerToken}" } }, "token": "${realToken}"`;
+  writeFileSync(join(dir, 'config.json'), original);
+  const { loadConfig, CONFIG_DIR } = await import('../src/config');
+  const cfg = loadConfig();
+
+  expect(cfg.token).not.toBe(headerToken);
+  expect(cfg.token).not.toBe(realToken);
+  expect(cfg.token).toMatch(/^[0-9a-f]{32}$/);
+  const rewritten = JSON.parse(readFileSync(join(CONFIG_DIR, 'config.json'), 'utf8'));
+  expect(rewritten.token).toBe(cfg.token);
+  expect(cfg.configIssues.some((m) => m.includes('kept its token'))).toBe(false);
+  expect(cfg.configIssues.some((m) => m.includes('none could be trusted'))).toBe(true);
+
+  // The original is still recoverable, so the real token is not lost - just not guessed at.
+  const badFile = readdirSync(CONFIG_DIR).find((f) => f.startsWith('config.json.bad-'));
+  expect(readFileSync(join(CONFIG_DIR, badFile as string), 'utf8')).toBe(original);
 });
 
 test('a config.json that cannot even be moved aside runs from in-memory defaults, file untouched', async () => {
@@ -204,7 +256,10 @@ test('a config.json that cannot even be moved aside runs from in-memory defaults
     chmodSync(dir, 0o700); // restore so the temp dir can be cleaned up
   }
   expect(readFileSync(cfgPath, 'utf8')).toBe(original); // left exactly as it was
-  expect(existsSync(join(dir, 'config.json.bad-'))).toBe(false);
+  // Glob, not a literal name: `config.json.bad-` with no timestamp is a file no
+  // implementation ever writes, so asserting its absence passes unconditionally - including
+  // against an implementation that did wrongly move the file aside.
+  expect(readdirSync(dir).find((f) => f.startsWith('config.json.bad-'))).toBeUndefined();
 });
 
 // deploy/config.example.json's own torrentDir has crashed the service into a launchd
@@ -222,4 +277,116 @@ test('an uncreatable torrentDir falls back to the default and is recorded in con
   expect(cfg?.torrentDir).toBe(join(CONFIG_DIR, 'torrents'));
   expect(cfg?.configIssues.some((m) => m.includes('torrentDir'))).toBe(true);
   expect(() => statSync(cfg?.torrentDir as string)).not.toThrow();
+});
+
+// loadConfig() runs at module load under a KeepAlive LaunchAgent, before the notifier
+// exists, so every one of the three tests below is pinning the same property: an uncaught
+// throw here is not a crash the owner hears about, it is a silent 10-second restart loop.
+// Each uses a real OS error rather than a mocked fs - EISDIR in particular is not a thing
+// a reasonable fs mock produces, and it is exactly what a directory left in config.json's
+// place gives.
+
+test('an unreadable config.json (permission denied) does not throw and is left untouched', async () => {
+  const original = '{ "dailyLimit": 3, "token": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" }\n';
+  const cfgPath = join(dir, 'config.json');
+  writeFileSync(cfgPath, original);
+  chmodSync(cfgPath, 0o000); // EACCES: e.g. left behind by a single sudo run
+  const { loadConfig } = await import('../src/config');
+  let cfg: ReturnType<typeof loadConfig> | undefined;
+  try {
+    expect(() => {
+      cfg = loadConfig();
+    }).not.toThrow();
+  } finally {
+    chmodSync(cfgPath, 0o600); // restore so the bytes can be read back (and cleaned up)
+  }
+
+  // Post-state, which is the half that matters: a file we could not read must not be
+  // rewritten - that would destroy bytes we never saw - and must not be moved aside.
+  expect(readFileSync(cfgPath, 'utf8')).toBe(original);
+  expect(readdirSync(dir).find((f) => f.startsWith('config.json.bad-'))).toBeUndefined();
+
+  expect(cfg?.dailyLimit).toBe(10); // nothing was read, so nothing was applied
+  expect(cfg?.token).toMatch(/^[0-9a-f]{32}$/); // usable this session, in memory only
+  expect(cfg?.configIssues.some((m) => m.includes('could not be read'))).toBe(true);
+});
+
+test('a config.json that is a directory (EISDIR) does not throw and is left in place', async () => {
+  const cfgPath = join(dir, 'config.json');
+  mkdirSync(cfgPath); // existsSync() is true, readFileSync() throws EISDIR
+  writeFileSync(join(cfgPath, 'marker'), 'still here');
+  const { loadConfig } = await import('../src/config');
+  let cfg: ReturnType<typeof loadConfig> | undefined;
+  expect(() => {
+    cfg = loadConfig();
+  }).not.toThrow();
+
+  expect(statSync(cfgPath).isDirectory()).toBe(true);
+  expect(readFileSync(join(cfgPath, 'marker'), 'utf8')).toBe('still here');
+  expect(cfg?.token).toMatch(/^[0-9a-f]{32}$/);
+  expect(cfg?.configIssues.some((m) => m.includes('could not be read'))).toBe(true);
+});
+
+// Reachable on a completely ordinary config: no config.json at all, config dir not
+// writable. existsSync() is false, so none of the malformed-file paths run - a token is
+// generated with canWrite still true and the write itself is what throws.
+test('an unwritable config dir with no config.json runs from an in-memory token', async () => {
+  chmodSync(dir, 0o500); // read+exec only: creating config.json in it fails with EACCES
+  const { loadConfig } = await import('../src/config');
+  let cfg: ReturnType<typeof loadConfig> | undefined;
+  try {
+    expect(() => {
+      cfg = loadConfig();
+    }).not.toThrow();
+  } finally {
+    chmodSync(dir, 0o700); // restore so the temp dir can be cleaned up
+  }
+
+  expect(cfg?.token).toMatch(/^[0-9a-f]{32}$/);
+  expect(existsSync(join(dir, 'config.json'))).toBe(false); // nothing half-landed
+  expect(cfg?.configIssues.some((m) => m.includes('could not be written'))).toBe(true);
+});
+
+// The negative half of the write condition, which has now been edited in three consecutive
+// rounds: a healthy config.json must come out of loadConfig() byte-identical. The fixture
+// is deliberately formatted the way loadConfig() would NOT write it (compact, no trailing
+// newline), so a rewrite that happened to preserve every value still fails here.
+test('a healthy config.json is left byte-identical', async () => {
+  const token = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4';
+  const original = `{"dailyLimit":7,"qbitUsername":"alice","token":"${token}"}`;
+  const cfgPath = join(dir, 'config.json');
+  writeFileSync(cfgPath, original);
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+
+  expect(cfg.token).toBe(token);
+  expect(cfg.dailyLimit).toBe(7);
+  expect(cfg.configIssues).toEqual([]);
+  expect(readFileSync(cfgPath, 'utf8')).toBe(original);
+  expect(readdirSync(dir).find((f) => f.startsWith('config.json.bad-'))).toBeUndefined();
+});
+
+// The read guard has two halves, and this pins the second one on its own: a file we could
+// not read must also stop the write below. A write-only config.json separates them - the
+// read fails, the write would succeed - so without `canWrite = false` the operator's file
+// is replaced by nothing but a fresh token, which is the same destruction the move-aside
+// path exists to prevent, reached by a different route.
+test('a config.json that can be written but not read is not rewritten', async () => {
+  const original = '{ "dailyLimit": 3, "token": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" }\n';
+  const cfgPath = join(dir, 'config.json');
+  writeFileSync(cfgPath, original);
+  chmodSync(cfgPath, 0o200); // write-only: readFileSync EACCES, writeFileSync would work
+  const { loadConfig } = await import('../src/config');
+  let cfg: ReturnType<typeof loadConfig> | undefined;
+  try {
+    expect(() => {
+      cfg = loadConfig();
+    }).not.toThrow();
+  } finally {
+    chmodSync(cfgPath, 0o600);
+  }
+
+  expect(readFileSync(cfgPath, 'utf8')).toBe(original);
+  expect(cfg?.configIssues.some((m) => m.includes('could not be read'))).toBe(true);
+  expect(cfg?.configIssues.some((m) => m.includes('could not be written'))).toBe(false);
 });

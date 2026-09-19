@@ -88,11 +88,12 @@ REMOTE
 if [[ "$status" -eq 2 ]]; then
   echo "" >&2
   echo "The LaunchAgent isn't installed on $HOST yet. One-time setup:" >&2
-  echo "  1. From this repo, on THIS machine (not $HOST):" >&2
-  echo "       sed \"s|__HOME__|\$HOME|g\" deploy/org.user.hebits-addon.plist > /tmp/org.user.hebits-addon.plist" >&2
-  echo "       scp /tmp/org.user.hebits-addon.plist \"$HOST:Library/LaunchAgents/org.user.hebits-addon.plist\"" >&2
-  echo "  2. Then, on $HOST itself:" >&2
-  echo "       ssh \"$HOST\" 'launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/org.user.hebits-addon.plist'" >&2
+  echo "  1. From this repo, on THIS machine (not $HOST) - copy the template unsubstituted:" >&2
+  echo "       scp deploy/org.user.hebits-addon.plist \"$HOST:/tmp/org.user.hebits-addon.plist\"" >&2
+  echo "  2. Then substitute and load it ON $HOST - the \$HOME in the sed must be that" >&2
+  echo "     machine's, not this one's, or every path in the plist points at the wrong" >&2
+  echo "     account and the service never spawns. Single quotes keep it unexpanded here:" >&2
+  echo "       ssh \"$HOST\" 'mkdir -p ~/Library/LaunchAgents && sed \"s|__HOME__|\$HOME|g\" /tmp/org.user.hebits-addon.plist > ~/Library/LaunchAgents/org.user.hebits-addon.plist && launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/org.user.hebits-addon.plist'" >&2
   echo "  Then re-run this script." >&2
 fi
 if [[ "$status" -ne 0 ]]; then

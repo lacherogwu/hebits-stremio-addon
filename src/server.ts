@@ -292,8 +292,11 @@ app.all('*', async (c) => {
         },
         downloadsToday: `${d.used}/${d.limit}`,
         // configIssues surfaces a config.json typo here, rather than leaving it buried in
-        // the log as the only trace - see config.ts's loadConfig().
-        health: { ...health, logFile: LOG_FILE, configIssues: cfg.configIssues },
+        // the log as the only trace - see config.ts's loadConfig(). storeIssue is the same
+        // idea for state.json: a corrupt ledger moved aside resets today's grab count, and
+        // daily() falls back to that count exactly when Hebits' own counter is
+        // unreachable - see store.ts's loadIssue. null when state.json loaded cleanly.
+        health: { ...health, logFile: LOG_FILE, configIssues: cfg.configIssues, storeIssue: store.loadIssue },
         freeGB: Math.round(((await qbit.freeSpace()) || 0) / GB),
       });
     }

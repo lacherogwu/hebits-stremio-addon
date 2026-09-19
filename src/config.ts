@@ -103,6 +103,15 @@ function logIssue(msg: string, issues: string[]): void {
 // to fall through to a normal fresh token than to trust a garbled one.
 const TOKEN_SHAPE = /^[0-9a-f]{32}$/;
 
+// What salvageToken() decided, and the clause explaining it that loadConfig() appends to
+// the parse-failure message. `note` is never empty except when the file contained no
+// "token" key at all: a token that was visibly in the file but did not survive must say
+// why, or the operator is left with a rotated token and no explanation.
+interface Salvage {
+  token?: string;
+  note: string;
+}
+
 // Bounded on purpose: a single regex over the raw (unparseable) text, never an attempt to
 // repair or partially parse the rest of the file. Used only when JSON.parse has already
 // failed - see loadConfig(). A malformed config.json is the expected failure mode here (the
@@ -110,10 +119,40 @@ const TOKEN_SHAPE = /^[0-9a-f]{32}$/;
 // already-installed Stremio/Nuvio client's URL until the operator notices and restores the
 // file - on a TV client, painful. Salvaging the token turns that into: service keeps
 // running, clients keep working, operator fixes the typo at leisure.
-function salvageToken(rawText: string): string | undefined {
-  const match = rawText.match(/"token"\s*:\s*"([^"]*)"/);
-  const candidate = match?.[1];
-  return candidate !== undefined && TOKEN_SHAPE.test(candidate) ? candidate : undefined;
+//
+// Treat this as a trust boundary, not a parser. Its input is by definition a malformed
+// file, and its output becomes the URL secret that tokenOk() in server.ts is the only
+// thing standing between an internet-facing route and an unauthenticated caller. Two
+// independent checks have to hold before a value is trusted:
+//
+//  - SHAPE. TOKEN_SHAPE above: exactly what randomBytes(16).toString('hex') produces.
+//  - POSITION. The regex cannot tell nesting depth, so `"token"` at ANY depth matches -
+//    and `notify.headers` is a supported place for an operator to put an auth header
+//    literally named "token" (notify.ts reads headers/method/body/command). A non-global
+//    match would take whichever came first in the text, which is how a webhook header's
+//    value once became the service's URL secret while the code reported the operator's
+//    token had been kept - every client URL dead, and the secret copied from a header
+//    that may be shared with another system. So: collect every candidate, and salvage
+//    only when exactly ONE is shape-valid. Zero or several fall through to a fresh
+//    token, which is the already-correct default. Guessing between candidates is not an
+//    option here - "first" and "last" are both wrong on some real file, silently.
+function salvageToken(rawText: string): Salvage {
+  const found: string[] = [];
+  const valid: string[] = [];
+  for (const match of rawText.matchAll(/"token"\s*:\s*"([^"]*)"/g)) {
+    const candidate = match[1] ?? '';
+    found.push(candidate);
+    if (TOKEN_SHAPE.test(candidate)) valid.push(candidate);
+  }
+  const only = valid[0];
+  if (valid.length === 1 && only !== undefined) return { token: only, note: ', kept its token so existing clients keep working' };
+  if (valid.length > 1)
+    return {
+      note: `, and ${valid.length} token-shaped values were found in it so none could be trusted (a nested "token", e.g. a notify header, looks the same to a text search) - a fresh token was generated`,
+    };
+  if (found.length > 0)
+    return { note: ', and the "token" in it is not the expected 32-character lowercase-hex shape - a fresh token was generated' };
+  return { note: '' };
 }
 
 // One scalar top-level field. Returns the validated value, or undefined to fall back to
@@ -156,10 +195,10 @@ export function loadConfig(): Config {
   mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   const configIssues: string[] = [];
   let saved: Record<string, unknown> = {};
-  // Whether it's safe to write CONFIG_FILE below. Stays true unless a malformed file
-  // below couldn't even be moved aside - writing then would overwrite the operator's
-  // original bytes with nothing but a fresh token, which is strictly worse than leaving
-  // the broken file in place untouched.
+  // Whether it's safe to write CONFIG_FILE below. Cleared when the existing file could not
+  // be read at all, and when a malformed one couldn't even be moved aside - writing in
+  // either case would overwrite operator bytes we never saw with nothing but a fresh
+  // token, which is strictly worse than leaving the file in place untouched.
   let canWrite = true;
   // A hand-edited config.json that fails to parse (trailing comma, truncated write, ...)
   // must not throw here: this runs at module load, before the notifier exists, so an
@@ -176,29 +215,47 @@ export function loadConfig(): Config {
   // truthy from salvage" is not the same signal as "nothing needs writing".
   let justRecovered = false;
   if (existsSync(CONFIG_FILE)) {
-    const raw = readFileSync(CONFIG_FILE, 'utf8');
+    // The read is inside the try for the same reason the parse is: a file that exists but
+    // cannot be read throws just as fatally here (mode 000 after one sudo run, a directory
+    // left in its place, a half-restored backup) and this runs at module load. It also has
+    // to set canWrite = false - there is no text to salvage a token from, and rewriting a
+    // file whose bytes we never saw is the same destruction the move-aside below exists to
+    // prevent. Without that, guarding the read would only relocate the throw into the
+    // writeFileSync further down.
+    let raw: string | undefined;
     try {
-      saved = JSON.parse(raw);
+      raw = readFileSync(CONFIG_FILE, 'utf8');
     } catch (e) {
-      const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
-      const salvaged = salvageToken(raw);
-      if (salvaged) saved.token = salvaged;
+      canWrite = false;
+      logIssue(
+        `config.json exists but could not be read (${(e as Error).message}) - running from in-memory defaults only, config.json left untouched`,
+        configIssues,
+      );
+    }
+    if (raw !== undefined) {
       try {
-        renameSync(CONFIG_FILE, badPath);
-        justRecovered = true;
-        logIssue(
-          `config.json could not be parsed (${(e as Error).message}) - the original was moved to ${badPath}; starting from defaults${salvaged ? ', kept its token so existing clients keep working' : ''}`,
-          configIssues,
-        );
-      } catch (renameError) {
-        // Couldn't even move it aside (e.g. the config dir isn't writable) - leave the
-        // file exactly as it is and run this process from in-memory defaults only. Do
-        // NOT fall through to the write below.
-        canWrite = false;
-        logIssue(
-          `config.json could not be parsed (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running from in-memory defaults only, config.json left untouched`,
-          configIssues,
-        );
+        saved = JSON.parse(raw);
+      } catch (e) {
+        const badPath = `${CONFIG_FILE}.bad-${Date.now()}`;
+        const salvaged = salvageToken(raw);
+        if (salvaged.token) saved.token = salvaged.token;
+        try {
+          renameSync(CONFIG_FILE, badPath);
+          justRecovered = true;
+          logIssue(
+            `config.json could not be parsed (${(e as Error).message}) - the original was moved to ${badPath}; starting from defaults${salvaged.note}`,
+            configIssues,
+          );
+        } catch (renameError) {
+          // Couldn't even move it aside (e.g. the config dir isn't writable) - leave the
+          // file exactly as it is and run this process from in-memory defaults only. Do
+          // NOT fall through to the write below.
+          canWrite = false;
+          logIssue(
+            `config.json could not be parsed (${(e as Error).message}) and could not be moved aside (${(renameError as Error).message}) - running from in-memory defaults only, config.json left untouched`,
+            configIssues,
+          );
+        }
       }
     }
   }
@@ -213,7 +270,19 @@ export function loadConfig(): Config {
   // on disk was just moved aside and needs replacing - even when the token itself was
   // salvaged rather than generated, config.json still doesn't exist on disk any more.
   if (canWrite && (tokenWasGenerated || justRecovered)) {
-    writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
+    // Unguarded, this throws uncaught for a config dir that exists but isn't writable -
+    // the same silent restart loop again, and reachable on a completely ordinary config
+    // (no config.json at all, dir mode 500: token generated, canWrite still true, EACCES).
+    // Running this session from an in-memory token is strictly better than not running:
+    // it is exactly what the "couldn't move it aside" path above already does.
+    try {
+      writeFileSync(CONFIG_FILE, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 });
+    } catch (e) {
+      logIssue(
+        `config.json could not be written (${(e as Error).message}) - the addon is running with a token that exists only in memory, so it will change on the next restart; fix the permissions on ${CONFIG_DIR}`,
+        configIssues,
+      );
+    }
   }
 
   // Unknown keys (not in DEFAULTS) start here and are never touched below, so they survive
@@ -248,7 +317,10 @@ export function loadConfig(): Config {
     try {
       mkdirSync(cfg.torrentDir, { recursive: true, mode: 0o700 });
     } catch (e2) {
-      logIssue(`the default torrentDir (${cfg.torrentDir}) could not be created either: ${(e2 as Error).message} - torrent caching will fail until this is fixed`, configIssues);
+      logIssue(
+        `the default torrentDir (${cfg.torrentDir}) could not be created either: ${(e2 as Error).message} - torrent caching will fail until this is fixed`,
+        configIssues,
+      );
     }
   }
   return cfg;
