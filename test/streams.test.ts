@@ -8,7 +8,10 @@ const item = (hebitsId: string, title: string, extra: Partial<StreamItem> = {}):
   size: 10 * GB,
   files: 10,
   seeders: 5,
-  peers: 5,
+  // leechers, not peers: matches HebitsTorrent's own field (see streams.ts's StreamItem
+  // comment). 0 leechers reproduces the same "0 downloading" the original JS test got
+  // from its Torznab-shaped `peers: 5, seeders: 5` fixture (5 - 5 = 0).
+  leechers: 0,
   downloadFactor: 1,
   uploadFactor: 1,
   ...extra,
@@ -62,6 +65,15 @@ test('ordering: ready, downloading, freeleech, resolution', () => {
   expect(out[4]?.description).toMatch(/Counts toward ratio/);
   expect(out[2]?.name).toBe('🏠 Hebits\n1080p');
   expect(out[2]?.description).toMatch(/5 seeds · ⬇️ 0 downloading/);
+});
+
+// Discriminates downloadingCount()'s `leechers` from the retired Torznab-era
+// `peers - seeders`: with more seeders than leechers, the retired formula clamps to 0
+// while the real leecher count is nonzero, so this fails if that subtraction ever
+// creeps back in (see src/streams.ts's StreamItem comment and src/hebits.ts).
+test('downloading count is the leecher count itself, not seeders subtracted from it', () => {
+  const [s] = buildStreams({ ...base, items: [item('1', 'M.1080p.WEB-DL', { seeders: 5, leechers: 3 })], type: 'movie' });
+  expect(s?.description).toMatch(/5 seeds · ⬇️ 3 downloading/);
 });
 
 test('blocked results: daily limit and disk space are labelled and sorted last', () => {

@@ -1,4 +1,5 @@
 // Turns Hebits search results + local torrent state into Stremio stream objects.
+import { downloadingCount } from './hebits';
 import { coversEpisode, isDiscOrRemux, resolution, type SeasonInfo, seasonInfo } from './parse';
 
 const GB = 1024 ** 3;
@@ -27,13 +28,19 @@ function packLabel(info: SeasonInfo | null, files: number): string | null {
 // always known; the swarm/leech fields are only known for a live search hit - items
 // carried over from local state only (`atHomeOnly`, e.g. a pack search no longer
 // lists) never have them, hence optional rather than required.
+//
+// `leechers` - not `peers` - matches HebitsTorrent's own field (see hebits.ts):
+// Torznab's `peers` was seeders+leechers, which is why the old code subtracted
+// seeders back out; HebitsTorrent gives the leecher count directly, so that
+// subtraction must not come back here - downloadingCount() below is the one place
+// that turns it into the "N downloading" figure.
 export interface StreamItem {
   hebitsId: string;
   title: string;
   size: number;
   files: number;
   seeders?: number;
-  peers?: number;
+  leechers?: number;
   downloadFactor?: number;
   uploadFactor?: number;
   atHomeOnly?: boolean;
@@ -119,7 +126,7 @@ export function buildStreams({
       `🎬 ${it.title}`,
       it.atHomeOnly
         ? `💾 ${gb(it.size)}`
-        : `💾 ${gb(it.size)} · 🌱 ${it.seeders ?? 0} seeds · ⬇️ ${Math.max(0, (it.peers ?? 0) - (it.seeders ?? 0))} downloading`,
+        : `💾 ${gb(it.size)} · 🌱 ${it.seeders ?? 0} seeds · ⬇️ ${downloadingCount({ seeders: it.seeders ?? 0, leechers: it.leechers ?? 0 })} downloading`,
       !it.atHomeOnly && leechLabel(it.downloadFactor ?? 1, it.uploadFactor ?? 1),
       packLabel(info, it.files),
       status,
