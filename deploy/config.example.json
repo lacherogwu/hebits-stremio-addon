@@ -1,0 +1,17 @@
+{
+  "port": 7000,
+  "qbitUrl": "http://127.0.0.1:8080",
+  "qbitUsername": "",
+  "qbitPassword": "",
+  "watchCategory": "watch",
+  "watchPath": "/home/you/hebits/watch",
+  "timezone": "Asia/Jerusalem",
+  "dailyLimit": 10,
+  "dailyLimitByDay": {},
+  "minFreeGB": 20,
+  "notify": { "webhookUrl": "" },
+  "torrentDir": "/home/you/.config/hebits-stremio-addon/torrents",
+  "logFile": "/home/you/.config/hebits-stremio-addon/addon.log",
+  "cookiePath": "/home/you/.config/hebits-stremio-addon/cookie.txt",
+  "token": ""
+}

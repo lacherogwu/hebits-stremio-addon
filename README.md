@@ -98,7 +98,7 @@ to `config.json`.
 
 Settings live in `~/.config/hebits-stremio-addon/config.json` (mode `600`), overriding the
 defaults in `lib/config.js`. Override the directory itself with the `HEBITS_ADDON_DIR`
-environment variable. See `config.example.json` for a starting point.
+environment variable. See `deploy/config.example.json` for a starting point.
 
 | Key | Default | Meaning |
 |---|---|---|
