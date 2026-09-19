@@ -42,9 +42,9 @@ test('ok -> failing sends a login alert', () => {
   const { health, noteLogin } = createHealthTracker(notifier, (m) => logs.push(m));
 
   noteLogin(true); // reach 'ok' silently first
-  noteLogin(false, 'Jackett search: HTTP 500');
+  noteLogin(false, 'hebits search: HTTP 500');
   expect(health.hebitsLogin).toBe('failing');
-  expect(health.error).toBe('Jackett search: HTTP 500');
+  expect(health.error).toBe('hebits search: HTTP 500');
   expect(notifier.sent.map((s) => s.kind)).toEqual(['login']);
 });
 

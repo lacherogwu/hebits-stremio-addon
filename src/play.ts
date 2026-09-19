@@ -58,7 +58,7 @@ export interface PlayTorrentMeta {
 
 export type EnsureTorrentFn = (hebitsId: string, meta: Partial<TorrentEntry>) => Promise<TorrentEntry | undefined>;
 
-// What jackett's search cache holds for a Hebits id, as read here.
+// What the search cache (addon.ts's cachedItem) holds for a Hebits id, as read here.
 export interface CachedItem {
   title?: string;
   size?: number;
