@@ -19,8 +19,10 @@ export const normalizeTitle = (s: unknown): string =>
     .replace(/[^\p{L}\p{N}]+/gu, '');
 
 // The slice of HebitsTorrent this module reads. `name` is hebits-client's field for what
-// Torznab called `title`.
-export type ReleaseItem = Pick<HebitsTorrent, 'id' | 'name'> & { imdb?: string };
+// Torznab called `title`. `cover` is not read here at all - it is carried so the caller
+// wrapping this seam can remember it: these results are the fifth place tracker results
+// enter the process, and lib/addon.js's poster route served covers found this way.
+export type ReleaseItem = Pick<HebitsTorrent, 'id' | 'name' | 'cover'> & { imdb?: string };
 
 export function matchRelease<T extends ReleaseItem>(items: T[], name: string): T | undefined {
   const want = normalizeTitle(name);
@@ -41,9 +43,10 @@ export interface IdentityEntry {
 }
 
 // The slice of hebits-client's Hebits this resolver uses. Kept narrow so a test fake needs
-// no `as any` to stand in for it.
+// no `as any` to stand in for it. `browse`, never the `search` alias: they are one
+// endpoint under two names, and `search` is being removed from the package.
 export interface IdentityHebits {
-  search(options: { query: string }): Promise<ReleaseItem[]>;
+  browse(options: { query: string }): Promise<ReleaseItem[]>;
 }
 
 // The slice of QBit this resolver uses.
@@ -97,7 +100,7 @@ export class IdentityResolver {
 
     const found: { hebitsId?: string; imdb?: string } = {};
     try {
-      const items = await this.hebits.search({ query: showName(entry.name) });
+      const items = await this.hebits.browse({ query: showName(entry.name) });
       const hit = matchRelease(items, entry.name);
       if (hit) {
         // Every Hebits result carries an id, so unlike the Torznab item (whose id was

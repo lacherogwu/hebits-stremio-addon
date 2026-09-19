@@ -33,7 +33,7 @@ function setup({
   const tagged: { hash: string; tags: string[] }[] = [];
   const resolver = new IdentityResolver({
     hebits: {
-      async search() {
+      async browse() {
         return items;
       },
     },
@@ -101,7 +101,7 @@ test('a miss inside the backoff window does not call out again', async () => {
   const cache: Record<string, IdentityCacheEntry> = { H: { attempts: 3, nextTryAt: 10 ** 9 } };
   const resolver = new IdentityResolver({
     hebits: {
-      async search() {
+      async browse() {
         searches++;
         return [];
       },
@@ -122,7 +122,7 @@ test('a cached hit is reused without a lookup', async () => {
   const cache: Record<string, IdentityCacheEntry> = { H: { hebitsId: '5', imdb: 'tt5', attempts: 0, nextTryAt: 0 } };
   const resolver = new IdentityResolver({
     hebits: {
-      async search() {
+      async browse() {
         searches++;
         return [];
       },
@@ -142,7 +142,7 @@ test('a cached hit is reused without a lookup', async () => {
 test('a lookup failure is swallowed, never thrown at the catalog', async () => {
   const resolver = new IdentityResolver({
     hebits: {
-      async search() {
+      async browse() {
         throw new Error('Hebits HTTP 500');
       },
     },
@@ -168,7 +168,7 @@ test('a partially-resolvable entry backs off, keeping the id it did find', async
   const cache: Record<string, IdentityCacheEntry> = {};
   const resolver = new IdentityResolver({
     hebits: {
-      async search() {
+      async browse() {
         hebitsCalls++;
         return [{ id: 42, name: 'Some.Show.S02E04-GRP' }]; // no imdb field
       },
@@ -207,7 +207,7 @@ test('once the backoff window passes, a partially-resolved entry retries and bac
   const cache: Record<string, IdentityCacheEntry> = {};
   const resolver = new IdentityResolver({
     hebits: {
-      async search() {
+      async browse() {
         hebitsCalls++;
         return [{ id: 42, name: 'Some.Show.S02E04-GRP' }];
       },
@@ -235,7 +235,7 @@ test('the query sent to Hebits is the show name, not the whole release name', as
   const queries: { query: string }[] = [];
   const resolver = new IdentityResolver({
     hebits: {
-      async search(options) {
+      async browse(options) {
         queries.push(options);
         return [];
       },

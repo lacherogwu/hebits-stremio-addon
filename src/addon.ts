@@ -3,7 +3,7 @@ import type { BrowseOptions, HebitsTorrent } from 'hebits-client';
 import type { CoverCache } from './covers';
 import { hebitsKey } from './hebits';
 import type { HomeEntry } from './home';
-import { type IdentityHebits, type IdentityQBit, IdentityResolver, normalizeTitle } from './identity';
+import { type IdentityQBit, IdentityResolver, normalizeTitle, type ReleaseItem } from './identity';
 import { type CatalogMeta, catalogMetas, type FullMeta, kindOf, matchesSearch, metaFor, parseHebitsId } from './library';
 import { type Episode, pickFile, seasonInfo } from './parse';
 import { type CachedItem, type FocusQBit, focusOn, type PlayStore } from './play';
@@ -16,6 +16,8 @@ const CINEMETA = 'https://v3-cinemeta.strem.io';
 const PAGE_SIZE = 50; // Hebits returns one page of results, no paging
 // Same bound as CoverCache: a long-lived process must not grow a cache without limit.
 const ITEM_CACHE_MAX = 500;
+// lib/jackett.js expired its search cache after ten minutes; so does this one.
+const ITEM_CACHE_MS = 10 * 60 * 1000;
 
 // --- the slices of each collaborator this module reads ------------------------------
 // Narrow on purpose (the house style in play.ts/home.ts/grab.ts): a test fake stands in
@@ -25,10 +27,9 @@ export interface AddonConfig extends DailyLimitConfig {
   minFreeGB: number;
 }
 
-// `browse` is the only tracker call this module makes. `search` is here solely because
-// IdentityResolver still calls it; hebits-client 0.3.0 drops the alias and identity.ts
-// moves to `browse`, at which point this extends nothing.
-export interface AddonHebits extends IdentityHebits {
+// `browse` is the only tracker call this module makes, directly or through anything it
+// wires up - the `search` alias hebits-client still carries is deliberately not here.
+export interface AddonHebits {
   browse(options?: BrowseOptions): Promise<HebitsTorrent[]>;
 }
 
@@ -68,6 +69,7 @@ export interface AddonDeps {
   // (defaulting to the global) so tests reach no network at all - the same seam
   // identity.ts gives `cinemetaSearch` and `now`.
   fetchImpl?: typeof fetch;
+  now?: () => number;
 }
 
 export interface ManifestResource {
@@ -109,7 +111,26 @@ export type AddonStream = StremioStream | NoticeStream;
 
 export type MediaType = 'movie' | 'series';
 
-export function makeAddon({ cfg, store, hebits, qbit, home, covers, daily, version, log, noteLogin, fetchImpl }: AddonDeps) {
+// A tracker result as the caches read it: identity.ts's narrow ReleaseItem (id, name,
+// cover - all a release-name lookup promises), plus the fields play.ts wants at grab time
+// when a full HebitsTorrent is what arrived. For a ReleaseItem those stay undefined: the
+// same "nothing known" a cache miss gives, never a wrong size or a phantom 0 seeders.
+type RememberedItem = ReleaseItem & Partial<Pick<HebitsTorrent, 'size' | 'fileCount' | 'seeders'>>;
+
+export function makeAddon({
+  cfg,
+  store,
+  hebits,
+  qbit,
+  home,
+  covers,
+  daily,
+  version,
+  log,
+  noteLogin,
+  fetchImpl,
+  now = Date.now,
+}: AddonDeps) {
   const doFetch = fetchImpl ?? fetch;
   const manifest: Manifest = {
     id: 'net.hebits.home',
@@ -133,17 +154,6 @@ export function makeAddon({ cfg, store, hebits, qbit, home, covers, daily, versi
     behaviorHints: { configurable: false },
   };
 
-  // Created on first use, like play.ts does with `store.data.focus`.
-  store.data.identity ??= {};
-  const identity = new IdentityResolver({
-    hebits,
-    qbit,
-    cinemetaSearch,
-    cache: store.data.identity,
-    save: () => store.save(),
-    log,
-  });
-
   // ---- what the tracker last said about an id -------------------------------
   // lib/addon.js rummaged through the indexer client's private search cache for this
   // (`[...jackett.cache.values()].flatMap(c => c.items).find(...)`). That client is gone,
@@ -153,9 +163,9 @@ export function makeAddon({ cfg, store, hebits, qbit, home, covers, daily, versi
   // no-seeders guard, and the title/size/fileCount/cover written into the store at grab
   // time). A miss still means "nothing known" for both, exactly as a cache miss did.
 
-  const itemCache = new Map<string, CachedItem>();
+  const itemCache = new Map<string, { at: number; item: CachedItem }>();
 
-  function remember(items: HebitsTorrent[]): HebitsTorrent[] {
+  function remember<T extends RememberedItem>(items: T[]): T[] {
     for (const it of items) {
       const key = hebitsKey(it);
       covers.remember(key, it.cover);
@@ -163,16 +173,50 @@ export function makeAddon({ cfg, store, hebits, qbit, home, covers, daily, versi
         const oldest = itemCache.keys().next().value;
         if (oldest !== undefined) itemCache.delete(oldest);
       }
-      itemCache.set(key, { title: it.name, size: it.size, files: it.fileCount, cover: it.cover, seeders: it.seeders });
+      itemCache.set(key, { at: now(), item: itemOf(it) });
     }
     return items;
   }
 
-  const cachedItem = (hebitsId: string): CachedItem | undefined => itemCache.get(hebitsId);
+  const itemOf = (it: RememberedItem): CachedItem => ({
+    title: it.name,
+    size: it.size,
+    files: it.fileCount,
+    cover: it.cover,
+    seeders: it.seeders,
+  });
 
-  // Every tracker call this module makes goes through here, so nothing can reach the
-  // catalogue without being remembered first.
+  // ...and it expires, like lib/jackett.js's cache did. play.ts's no-seeders guard reads
+  // this: without expiry a torrent seen once with no seeders would refuse its grab
+  // forever, turning a transient refusal into a permanent one with no visible cause.
+  const cachedItem = (hebitsId: string): CachedItem | undefined => {
+    const hit = itemCache.get(hebitsId);
+    if (!hit) return undefined;
+    if (now() - hit.at >= ITEM_CACHE_MS) {
+      itemCache.delete(hebitsId);
+      return undefined;
+    }
+    return hit.item;
+  };
+
+  // Every tracker call this module makes goes through here - including the release-name
+  // lookup IdentityResolver runs below, which is how a torrent nobody tagged gets its
+  // cover onto the poster route - so nothing can reach the catalogue unremembered.
   const browse = (options: BrowseOptions): Promise<HebitsTorrent[]> => hebits.browse(options).then(remember);
+
+  // The release-name lookup for torrents nobody tagged. It gets the WRAPPED browse, not
+  // the client: these results are tracker results like any other, and lib/addon.js served
+  // their covers on /poster/<hash> by way of the indexer client's own cache.
+  // Created on first use, like play.ts does with `store.data.focus`.
+  store.data.identity ??= {};
+  const identity = new IdentityResolver({
+    hebits: { browse },
+    qbit,
+    cinemetaSearch,
+    cache: store.data.identity,
+    save: () => store.save(),
+    log,
+  });
 
   // One tracker result as buildStreams reads it. The renames are the boundary's
   // (see hebits.ts): `hebitsKey(it)` not `String(it.id)`, `name` not `title`,

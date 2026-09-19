@@ -116,11 +116,18 @@ interface HarnessOptions {
   torrents?: Record<string, TorrentEntry>;
   daily?: { used: number; limit: number };
   responses?: Record<string, () => Response>;
+  now?: () => number;
 }
 
-function harness({ tracker = TRACKER, entries = [], torrents = {}, daily = { used: 2, limit: 10 }, responses = {} }: HarnessOptions = {}) {
+function harness({
+  tracker = TRACKER,
+  entries = [],
+  torrents = {},
+  daily = { used: 2, limit: 10 },
+  responses = {},
+  now,
+}: HarnessOptions = {}) {
   const browsed: BrowseOptions[] = [];
-  const searched: unknown[] = [];
   const fetched: string[] = [];
   const logins: { ok: boolean; error?: string }[] = [];
   const covers = new CoverCache();
@@ -165,12 +172,6 @@ function harness({ tracker = TRACKER, entries = [], torrents = {}, daily = { use
         if (typeof tracker === 'function') return tracker();
         return tracker;
       },
-      // Only IdentityResolver calls this, and only for a torrent with no tags. Nothing
-      // in addon.ts may: `browse` is the one tracker call it makes.
-      async search(options) {
-        searched.push(options);
-        return [];
-      },
     },
     qbit,
     home,
@@ -181,6 +182,7 @@ function harness({ tracker = TRACKER, entries = [], torrents = {}, daily = { use
     noteLogin(ok, error) {
       logins.push({ ok, error });
     },
+    ...(now && { now }),
     async fetchImpl(input) {
       const url = String(input);
       fetched.push(url);
@@ -188,7 +190,7 @@ function harness({ tracker = TRACKER, entries = [], torrents = {}, daily = { use
       return make ? make() : new Response('nope', { status: 404 });
     },
   };
-  return { addon: makeAddon(deps), browsed, searched, fetched, logins, covers };
+  return { addon: makeAddon(deps), browsed, fetched, logins, covers };
 }
 
 // Named element access, so no fixture lookup needs a non-null assertion.
@@ -230,7 +232,7 @@ test('the manifest is byte-for-byte what the TV already installed', () => {
 // --- the stream list -----------------------------------------------------------------
 
 test('a series stream list has the expected ids, order, status labels and play urls', async () => {
-  const { addon, browsed, searched } = harness({ entries: [packAtHome, oldUpload] });
+  const { addon, browsed } = harness({ entries: [packAtHome, oldUpload] });
 
   const streams = await addon.handleStream('series', 'tt123:1:2', BASE);
 
@@ -260,10 +262,11 @@ test('a series stream list has the expected ids, order, status labels and play u
   expect(at(streams, 1).description).toContain('⏬ Downloading 50%');
   expect(at(streams, 3).description).toContain("💀 No seeders on Hebits right now, can't download");
 
-  // The tracker was asked by IMDb id, once for the title and once scoped to the season,
-  // through `browse` - never through the `search` alias.
+  // The tracker was asked by IMDb id, once for the title and once scoped to the season.
+  // That it went through `browse` rather than the `search` alias is not asserted here
+  // because it cannot be otherwise: AddonHebits declares no `search`, so the alias is
+  // unreachable from this module and from everything it wires up.
   expect(browsed).toEqual([{ imdb: 'tt123' }, { imdb: 'tt123', season: 1 }]);
-  expect(searched).toEqual([]);
 });
 
 test('a title already at home survives a failed search, with a readable notice row', async () => {
@@ -428,6 +431,38 @@ test('a cover that no longer loads is a 404, not a half-written response', async
   expect(res.body).toBeUndefined();
 });
 
+// A torrent nobody tagged, whose only route to a poster is the release-name lookup
+// IdentityResolver runs: no IMDb id anywhere, so the metahub redirect cannot mask a
+// missing cover.
+const untagged = entry('e'.repeat(40), 'Nobody.Tagged.This.S01E01.1080p.WEBRip', {
+  files: [{ path: 'Nobody.Tagged.This.S01E01.mkv', length: 1 }],
+});
+const identified = torrent(707, 'Nobody.Tagged.This.S01E01.1080p.WEBRip', { cover: 'https://img.hebits.net/707.png' });
+
+test('a torrent identified by release-name search serves that search results cover', async () => {
+  const { addon, fetched } = harness({
+    entries: [untagged],
+    tracker: [identified],
+    responses: { 'https://img.hebits.net/707.png': () => new Response(PNG, { headers: { 'content-type': 'image/png' } }) },
+  });
+
+  // Loading the catalogue is what runs the lookup; it writes the Hebits id back as a tag,
+  // which is how the poster route finds it again (the fake shares the entry object, the
+  // way qBittorrent would hand the tags back on the next read).
+  const rows = await addon.handleCatalog('series', undefined, BASE);
+  expect(at(rows, 0).poster).toBe(`${BASE}/poster/${'e'.repeat(40)}`);
+
+  const res = new RecordingResponse();
+  await addon.handlePoster(res, 'e'.repeat(40));
+
+  // 200 can only have come from the remembered cover: this entry has no IMDb id, so there
+  // is no metahub redirect to fall back on.
+  expect(res.status).toBe(200);
+  expect(res.headers['Content-Type']).toBe('image/png');
+  expect(res.body).toEqual(PNG);
+  expect(fetched).toContain('https://img.hebits.net/707.png');
+});
+
 // --- search all of Hebits --------------------------------------------------------------
 
 test('the search catalogue groups uploads into one card per title, with its own poster url', async () => {
@@ -439,4 +474,25 @@ test('the search catalogue groups uploads into one card per title, with its own 
   expect(at(metas, 0).poster).toBe(`${BASE}/poster/101`);
   expect(at(metas, 0).description).toContain('On Hebits: 5 uploads');
   expect(await addon.handleSearchCatalog('series', '', BASE)).toEqual([]);
+});
+
+// --- what the tracker last said -------------------------------------------------------
+
+test('what the tracker said about a torrent expires, so a stale "no seeders" cannot refuse a grab forever', async () => {
+  let clock = 1_700_000_000_000;
+  const { addon } = harness({ now: () => clock });
+  await addon.handleSearchCatalog('series', 'search=show+name', BASE);
+
+  // play.ts's no-seeders guard reads this: 102 has none, so it refuses to spend a grab.
+  expect(addon.cachedItem('102')?.seeders).toBe(0);
+  expect(addon.cachedItem('101')?.size).toBe(2 * GB);
+
+  // One millisecond short of ten minutes it is still the answer...
+  clock += 10 * 60 * 1000 - 1;
+  expect(addon.cachedItem('102')?.seeders).toBe(0);
+
+  // ...and at ten minutes it is gone, so the guard stops biting and the grab may proceed.
+  clock += 1;
+  expect(addon.cachedItem('102')).toBeUndefined();
+  expect(addon.cachedItem('101')).toBeUndefined();
 });
