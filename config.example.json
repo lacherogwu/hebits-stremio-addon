@@ -9,6 +9,7 @@
   "dailyLimit": 10,
   "dailyLimitByDay": {},
   "minFreeGB": 20,
+  "rateLimit": { "limit": 3, "interval": 1000 },
   "notify": { "webhookUrl": "" },
   "cookiePath": "/absolute/path/to/cookie.txt"
 }

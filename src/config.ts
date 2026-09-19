@@ -12,6 +12,12 @@ const HOME = homedir();
 export const CONFIG_DIR = process.env.HEBITS_ADDON_DIR || join(HOME, '.config', 'hebits-stremio-addon');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
+/** p-throttle's shape: at most `limit` requests per `interval` milliseconds. */
+export interface RateLimit {
+  limit: number;
+  interval: number;
+}
+
 export interface Config {
   port: number;
   // Hebits Heb Rookie: 5 on day one, then 10. Raise when the account ranks up.
@@ -35,6 +41,10 @@ export interface Config {
   // keys always worked at runtime (validateOptions spreads the received object), so this
   // widening documents existing behaviour and changes none of it.
   notify: NotifyConfig & { webhookUrl: string };
+  // How hard this addon may hit the tracker, as p-throttle's { limit, interval }: at most
+  // `limit` requests per `interval` ms, shared across EVERY call hebits-client makes -
+  // browse, the profile counter, .torrent downloads, and each retry of any of them.
+  rateLimit: RateLimit;
   torrentDir: string;
   logFile: string;
   // Where the Hebits login cookie lives. Defaults inside CONFIG_DIR so the repo is
@@ -58,6 +68,17 @@ const DEFAULTS: Omit<Config, 'token' | 'configIssues'> = {
   watchCategory: 'watch',
   watchPath: join(HOME, 'hebits', 'watch'),
   notify: { webhookUrl: '' },
+  // Three per second. hebits-client defaults to one per two seconds, which is right for a
+  // background service and wrong here: a TV is sitting in front of someone, waiting.
+  // Measured through the shipped bundle against a local stub, at one per two seconds: 6.0 s
+  // for an ordinary stream list, 22.0 s for a nine-season find card, 62.0 s at the 30-query
+  // allSeasons fan-out cap. At this setting the same three paths measure 1.0 s, 3.0 s and
+  // 11.0 s. Five per second was measured too (0.0 / 2.0 / 7.0 s) and not taken: the only
+  // path it materially improves is the rarest one, and the trade is not symmetric - a slow
+  // catalogue is recoverable, a banned account is not. That asymmetry is also why this is a
+  // config key rather than a constant: an operator who wants to be gentler should not have
+  // to edit source and rebuild to do it.
+  rateLimit: { limit: 3, interval: 1000 },
   torrentDir: join(CONFIG_DIR, 'torrents'),
   logFile: join(CONFIG_DIR, 'addon.log'),
   cookiePath: join(CONFIG_DIR, 'cookie.txt'),
@@ -93,8 +114,23 @@ const notifyShape: Record<string, z.ZodType> = {
   command: z.array(z.string()),
 };
 
-// Top-level scalar fields (everything in DEFAULTS except the nested notify object, which
-// gets its own per-key validation below).
+// Both keys must be positive and finite, or p-throttle's behaviour is undefined: a limit of
+// 0 stalls every request forever, and a negative or NaN interval makes the throttle
+// meaningless. Each falls back on its own, like every other field.
+const rateLimitShape: Record<string, z.ZodType> = {
+  limit: z.number().int().positive(),
+  interval: z.number().positive(),
+};
+
+// Above this, a configIssue is recorded and the value is still honoured. It is a warning,
+// not a cap: the account is the operator's, and a deliberate choice is not a typo. But five
+// per second is where measurement stopped showing a real gain (see DEFAULTS.rateLimit), so
+// past it you are spending the one thing that cannot be replaced for something that was not
+// worth it.
+const NOISY_RATE_PER_SECOND = 5;
+
+// Top-level scalar fields (everything in DEFAULTS except the nested notify and rateLimit
+// objects, which get their own per-key validation below).
 const fieldSchemas: Record<string, z.ZodType> = {
   port: z.number(),
   dailyLimit: z.number(),
@@ -371,7 +407,21 @@ export function loadConfig(): Config {
       ...validateOptions('notify', notifyShape, DEFAULTS.notify, saved.notify, configIssues),
     };
 
+  if ('rateLimit' in saved)
+    validated.rateLimit = {
+      ...DEFAULTS.rateLimit,
+      ...validateOptions('rateLimit', rateLimitShape, DEFAULTS.rateLimit, saved.rateLimit, configIssues),
+    };
+
   const cfg: Config = { ...DEFAULTS, ...validated, token, configIssues } as Config;
+  // Checked after the merge, not inside rateLimitShape: it is a property of the two keys
+  // together, and either one alone can be perfectly reasonable.
+  const perSecond = (cfg.rateLimit.limit / cfg.rateLimit.interval) * 1000;
+  if (perSecond > NOISY_RATE_PER_SECOND)
+    logIssue(
+      `"rateLimit" allows ${perSecond.toFixed(1)} requests per second, above the ${NOISY_RATE_PER_SECOND}/s this addon considers useful - honoured, but a private tracker may not agree`,
+      configIssues,
+    );
   // A bad custom torrentDir (unwritable parent, a path through a file, ...) must not throw
   // here either, for the same reason as the JSON.parse above - fall back to the default,
   // which lives inside CONFIG_DIR and is normally creatable since that mkdirSync already

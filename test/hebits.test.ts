@@ -77,7 +77,7 @@ test('a cookie rotated after construction is carried on the next request, with n
   writeFileSync(cookiePath, 'session=old\n');
   // cacheTtlMs: 0 so the second call really goes out; the loose rate limit only keeps the
   // client's default 1-request-per-2s throttle from adding two seconds to the suite.
-  const hebits = makeHebits({ cookiePath }, { cacheTtlMs: 0, rateLimit: { limit: 100, interval: 10 } });
+  const hebits = makeHebits({ cookiePath, rateLimit: { limit: 100, interval: 10 } }, { cacheTtlMs: 0 });
   expect(hebits).toBeInstanceOf(Hebits);
 
   await hebits.checkLogin();
@@ -87,31 +87,28 @@ test('a cookie rotated after construction is carried on the next request, with n
   expect(sentCookies).toEqual(['session=old', 'session=new']);
 });
 
-// The rate limit is production behaviour, not a detail of the client: hebits-client's
-// default is one request every two seconds ("Nothing here is latency-sensitive" - true for a
-// background service, false for a TV waiting on a stream list), and makeHebits passing
-// nothing meant a measured 6.0 s for an ordinary stream list
+// The rate limit is production behaviour, not a detail of the client. hebits-client defaults
+// to one request every two seconds, which is right for a background service and wrong for a
+// TV waiting on a stream list; leaving it there measured 6.0 s for an ordinary stream list
 // and 22-62 s for a find card.
 //
-// Read the bounds below for what they are: this pins the CHOSEN value - 3 requests per
-// second - not merely that some throttle exists. That is on purpose. How hard this process
-// may hit a private tracker is a safety-critical constant with the account at stake, so
-// changing it should have to be done here, deliberately, in the same commit as the change
-// itself. Raising it is a decision to take with the tracker (hebits-client's README says
-// as much) and then reflect here on purpose - do NOT loosen this back to "is it bounded at
-// all", which is the shape that let the client's default ship unnoticed in the first place.
+// This is the wiring half of that property: what config says the rate is, is what the
+// throttle actually does. The value itself is pinned separately, against DEFAULTS, in
+// test/config.test.ts - it moved out of this file when it became a config key, because a
+// constant nobody could change without rebuilding was the wrong shape for the one setting
+// that can cost the account.
 //
-// The upper bound is a wall-clock assertion: four calls at 3-per-second take ~1 s, and 2 s
-// is the headroom for a loaded machine. A failure just over 2 s is a slow runner, not a
-// code fault; a failure at ~6 s is the client's 1-per-2s default coming back. The lower
-// bound fails if the throttle is dropped altogether, which is the failure that could get
-// the account banned.
+// Do NOT loosen this to "is it bounded at all". That is the shape that let the client's
+// default ship unnoticed in the first place. The lower bound fails if the throttle is
+// dropped, or if cfg.rateLimit is ignored in favour of a hardcoded value again; the upper
+// bound is wall-clock headroom for a loaded machine, so a failure just over 2 s is a slow
+// runner and a failure at ~6 s is the client's default coming back.
 //
 // checkLogin() is used because it bypasses the response cache, so each call really goes out.
-test('makeHebits throttles the tracker to the chosen 3 requests per second', async () => {
+test('makeHebits throttles at the rate config gives it, not one of its own', async () => {
   const cookiePath = join(mkdtempSync(join(tmpdir(), 'hebits-cookie-')), 'cookie.txt');
   writeFileSync(cookiePath, 'session=x\n');
-  const hebits = makeHebits({ cookiePath });
+  const hebits = makeHebits({ cookiePath, rateLimit: { limit: 3, interval: 1000 } });
 
   // Sequentially: hebits-client collapses identical requests that overlap in flight (its
   // own single-flight property), so four concurrent checkLogin() calls would be one
@@ -123,4 +120,22 @@ test('makeHebits throttles the tracker to the chosen 3 requests per second', asy
   expect(sentCookies.length).toBe(4); // four real requests, not one collapsed call
   expect(elapsed).toBeGreaterThanOrEqual(900); // the fourth waited out a full interval: 3 per second, not more
   expect(elapsed).toBeLessThan(2_000); // ...and not the client's 1-per-2s default, which would be ~6 s
+});
+
+// The other half: a DIFFERENT configured rate produces a different throttle. Without this,
+// the test above passes just as well against a makeHebits that ignores cfg and hardcodes
+// 3/1000 - which is exactly the code this change replaced.
+test('a slower configured rate really is slower', async () => {
+  const cookiePath = join(mkdtempSync(join(tmpdir(), 'hebits-cookie-')), 'cookie.txt');
+  writeFileSync(cookiePath, 'session=x\n');
+  const hebits = makeHebits({ cookiePath, rateLimit: { limit: 1, interval: 600 } });
+
+  const started = Date.now();
+  for (let i = 0; i < 3; i++) await hebits.checkLogin();
+  const elapsed = Date.now() - started;
+
+  expect(sentCookies.length).toBe(3);
+  // Three calls at 1-per-600ms wait out two intervals: ~1.2 s. At the 3/1000 the other test
+  // uses they would take ~0.7 s, so this bound fails if cfg.rateLimit is not being read.
+  expect(elapsed).toBeGreaterThanOrEqual(1_100);
 });

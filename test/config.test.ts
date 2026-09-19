@@ -560,3 +560,59 @@ test('a hand-written string token is kept as it is, with no issue raised', async
   expect(cfg.token).toBe('my-own-secret');
   expect(cfg.configIssues).toEqual([]);
 });
+
+// --- rateLimit -----------------------------------------------------------------------------
+// This is the one setting in config.json that can cost the account, so the default is pinned
+// here rather than left to drift. It used to be a constant in src/hebits.ts; it is a config
+// key now, which means an operator can be gentler without editing source - and also that the
+// value has to be defended at the loader, because config.json is hand-edited.
+
+test('the shipped rateLimit default is 3 requests per second', async () => {
+  const { loadConfig } = await import('../src/config');
+  expect(loadConfig().rateLimit).toEqual({ limit: 3, interval: 1000 });
+});
+
+test('a custom rateLimit is honoured', async () => {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ rateLimit: { limit: 1, interval: 5000 } }));
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+  expect(cfg.rateLimit).toEqual({ limit: 1, interval: 5000 });
+  expect(cfg.configIssues).toEqual([]);
+});
+
+// Per-key fallback, like every other nested object here: one bad key must not discard the
+// good one, or a typo in `interval` would silently restore a rate the operator had
+// deliberately lowered.
+test('one bad rateLimit key falls back alone, and the sibling key survives', async () => {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ rateLimit: { limit: 'three', interval: 4000 } }));
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+  expect(cfg.rateLimit).toEqual({ limit: 3, interval: 4000 });
+  expect(cfg.configIssues.some((m) => m.includes('rateLimit.limit'))).toBe(true);
+});
+
+// p-throttle is undefined at these values: limit 0 never releases a request, and a negative
+// interval makes the throttle meaningless. Both are type-valid numbers, so zod alone would
+// have let them through.
+test('a zero or negative rateLimit falls back instead of stalling or unthrottling', async () => {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ rateLimit: { limit: 0, interval: -1 } }));
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+  expect(cfg.rateLimit).toEqual({ limit: 3, interval: 1000 });
+  expect(cfg.configIssues.length).toBe(2);
+});
+
+// A warning, not a cap. The account belongs to the operator and a deliberate choice is not a
+// typo - but it must not pass in silence either.
+test('an aggressive rateLimit is honoured, and says so in configIssues', async () => {
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ rateLimit: { limit: 50, interval: 1000 } }));
+  const { loadConfig } = await import('../src/config');
+  const cfg = loadConfig();
+  expect(cfg.rateLimit).toEqual({ limit: 50, interval: 1000 }); // honoured, not clamped
+  expect(cfg.configIssues.some((m) => m.includes('50.0 requests per second'))).toBe(true);
+});
+
+test('the default rate does not warn', async () => {
+  const { loadConfig } = await import('../src/config');
+  expect(loadConfig().configIssues).toEqual([]);
+});

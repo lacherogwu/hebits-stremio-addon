@@ -10567,6 +10567,10 @@ const DEFAULTS = {
 	watchCategory: "watch",
 	watchPath: join(HOME, "hebits", "watch"),
 	notify: { webhookUrl: "" },
+	rateLimit: {
+		limit: 3,
+		interval: 1e3
+	},
 	torrentDir: join(CONFIG_DIR, "torrents"),
 	logFile: join(CONFIG_DIR, "addon.log"),
 	cookiePath: join(CONFIG_DIR, "cookie.txt")
@@ -10578,6 +10582,11 @@ const notifyShape = {
 	body: string(),
 	command: array(string())
 };
+const rateLimitShape = {
+	limit: number().int().positive(),
+	interval: number().positive()
+};
+const NOISY_RATE_PER_SECOND = 5;
 const fieldSchemas = {
 	port: number(),
 	dailyLimit: number(),
@@ -10701,12 +10710,18 @@ function loadConfig() {
 		...DEFAULTS.notify,
 		...validateOptions("notify", notifyShape, DEFAULTS.notify, saved.notify, configIssues)
 	};
+	if ("rateLimit" in saved) validated.rateLimit = {
+		...DEFAULTS.rateLimit,
+		...validateOptions("rateLimit", rateLimitShape, DEFAULTS.rateLimit, saved.rateLimit, configIssues)
+	};
 	const cfg = {
 		...DEFAULTS,
 		...validated,
 		token,
 		configIssues
 	};
+	const perSecond = cfg.rateLimit.limit / cfg.rateLimit.interval * 1e3;
+	if (perSecond > NOISY_RATE_PER_SECOND) logIssue(`"rateLimit" allows ${perSecond.toFixed(1)} requests per second, above the ${NOISY_RATE_PER_SECOND}/s this addon considers useful - honoured, but a private tracker may not agree`, configIssues);
 	try {
 		mkdirSync(cfg.torrentDir, {
 			recursive: true,
@@ -10742,13 +10757,9 @@ function writeCookie(path, cookie) {
 }
 //#endregion
 //#region src/hebits.ts
-const RATE_LIMIT = {
-	limit: 3,
-	interval: 1e3
-};
 function makeHebits(cfg, options = {}) {
 	return new Hebits({
-		rateLimit: RATE_LIMIT,
+		rateLimit: cfg.rateLimit,
 		...options,
 		cookie: () => readCookie(cfg.cookiePath) ?? ""
 	});

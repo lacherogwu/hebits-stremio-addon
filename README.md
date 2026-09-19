@@ -23,15 +23,24 @@ library, authenticating with a session cookie read from the file at `cookiePath`
 is the only credential involved, and it is installed through the addon's own
 [`/cookie` page](#the-hebits-login-cookie).
 
-**How hard it hits the tracker.** Every call the addon makes — searches, the profile
-counter, `.torrent` downloads and any retry of those — shares one throttle of **3 requests
-per second** (`src/hebits.ts`). The library's own default is one request every two seconds,
-which is right for a background service but not for a TV waiting on a stream list: measured
-against a local stub, the default gave 6.0 s for an ordinary stream list and 22 s for a
-nine-season search card, against 1.0 s and 3.0 s at this setting. It is still far gentler
-than the Jackett setup this replaces, which issued the same queries all at once with no
-throttle at all. The tracker's own download counter is read fresh before a download is ever
-spent, and cached for five minutes for everything that merely displays it (`src/grab.ts`).
+**How hard it hits the tracker.** Every call the addon makes — searches, the profile counter,
+`.torrent` downloads and any retry of those — shares **one** throttle, set by `rateLimit` in
+`config.json` and defaulting to **3 requests per second**.
+
+`hebits-client`'s own default is one request every two seconds, which is right for a
+background service and wrong for a TV waiting on a stream list: measured against a local stub,
+that default gave 6.0 s for an ordinary stream list and 22 s for a nine-season search card,
+against 1.0 s and 3.0 s here. Five per second was measured too and not taken — it only helps
+the rarest path, and the trade is not symmetric: a slow catalogue is recoverable, a banned
+account is not.
+
+That asymmetry is why it is configuration and not a constant. **Lower it freely.** Raise it
+and the addon still obeys you, but past 5 requests per second it records a line in
+`configIssues` saying so — a private tracker may take a different view of what is reasonable
+than you do, and you are the one with an account at stake.
+
+The tracker's own download counter is read fresh before a download is ever spent, and cached
+for five minutes for everything that merely displays it (`src/grab.ts`).
 
 ## Catalogs
 
@@ -201,6 +210,7 @@ supervised service has to be handed explicitly — see
 | `watchCategory` | `watch` | qBittorrent category for torrents this addon grabs |
 | `watchPath` | `~/hebits/watch` | Save path for `watchCategory` |
 | `notify` | `{"webhookUrl": ""}` | Alert transport; see [Notifications](#notifications) |
+| `rateLimit` | `{"limit": 3, "interval": 1000}` | At most `limit` requests per `interval` ms, across every tracker call. See [How hard it hits the tracker](#hebits-stremio-addon) above |
 | `torrentDir` | `<config dir>/torrents` | Where downloaded `.torrent` files are cached; created on startup if missing |
 | `logFile` | `<config dir>/addon.log` | Truncated in place (with a `.1` backup) once it passes 20 MB. **Whatever supervises the addon must send stdout and stderr to this same path** — see [Running it as a service](#running-it-as-a-service) |
 
